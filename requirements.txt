@@ -1,0 +1,11 @@
+openpyxl>=3.1.2
+
+# --- Desktop GUI (gui_main.py) ---
+ttkbootstrap>=1.10.1
+Pillow>=10.0.0
+
+# --- Packaging the GUI as a standalone .exe ---
+pyinstaller>=6.0.0
+
+# --- Streamlit web app (app.py) ---
+streamlit>=1.35.0,<2.0.0

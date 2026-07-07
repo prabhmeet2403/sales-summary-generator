@@ -46,6 +46,7 @@ from aggregator import (  # noqa: E402
     attach_comments,
     attach_historical,
 )
+from monthly_view import build_monthly_sections, resolve_month_roles  # noqa: E402
 from summary_writer import SummaryWriter  # noqa: E402
 from validator import ValidationReport  # noqa: E402
 
@@ -238,7 +239,9 @@ def generate_summary(
 
         progress("Building the Summary workbook…")
         writer = SummaryWriter(target_year, prior_years, years_with_margin)
-        wb = writer.build(section_results)
+        month_roles = resolve_month_roles(ws_main, cmap)
+        monthly_section_results = build_monthly_sections(rows, cmap, ws_main, section_results)
+        wb = writer.build(section_results, monthly_section_results, month_roles)
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir_obj / output_filename

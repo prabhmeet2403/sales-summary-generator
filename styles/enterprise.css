@@ -611,5 +611,11 @@ label[data-testid="stWidgetLabel"] {
 }
 [data-testid="stDownloadButton"] > button {
   font-family: var(--font) !important; font-weight: 600 !important;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+[data-testid="stDownloadButton"] > button:hover {
+  background:  var(--accent) !important;
+  color:       #fff !important;
+  border-color: var(--accent) !important;
 }
 [data-testid="stCaptionContainer"] { font-family: var(--font) !important; font-size: 12px !important; }

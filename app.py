@@ -335,51 +335,22 @@ def _render_result(result: "bridge.GenerationResult") -> None:
     if not result.success:
         info_box(f"<strong>{result.error_title}</strong> -- {result.error_message}", "red")
 
-    # ---- Downloads -------------------------------------------------
+    # ---- Download -------------------------------------------------
     if result.success and result.output_path and os.path.isfile(result.output_path):
         card_open("Download Results")
-        b1, b2, b3 = st.columns(3)
-        with b1:
-            with open(result.output_path, "rb") as fh:
-                st.download_button(
-                    "\U0001F4E5 Download Summary Workbook",
-                    data=fh.read(),
-                    file_name=Path(result.output_path).name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-        with b2:
-            if result.report_path and os.path.isfile(result.report_path):
-                with open(result.report_path, "rb") as fh:
-                    st.download_button(
-                        "\U0001F4C4 Download Validation Report",
-                        data=fh.read(),
-                        file_name=Path(result.report_path).name,
-                        mime="text/plain",
-                        use_container_width=True,
-                    )
-        with b3:
-            if st.button("\U0001F4C1 Open Output Folder", use_container_width=True):
-                _open_output_folder(os.path.dirname(result.output_path))
-        st.caption("\"Open Output Folder\" only works when this app is running on your own computer.")
+        with open(result.output_path, "rb") as fh:
+            st.download_button(
+                "\U0001F4E5 Download Summary Workbook",
+                data=fh.read(),
+                file_name=Path(result.output_path).name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
         card_close()
 
     if report is not None:
         with st.expander("Full Validation Report"):
             st.text(report.render())
-
-
-def _open_output_folder(folder: str) -> None:
-    try:
-        if os.name == "nt":
-            os.startfile(folder)  # type: ignore[attr-defined]
-        elif os.uname().sysname == "Darwin":
-            os.system(f'open "{folder}"')
-        else:
-            os.system(f'xdg-open "{folder}" >/dev/null 2>&1 &')
-        st.success(f"Opened: {folder}")
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"Could not open the folder automatically ({exc}). Path: {folder}")
 
 
 # =============================================================================

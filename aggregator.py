@@ -55,6 +55,12 @@ class GroupSummary:
     raw_sub_group: Optional[str]
     poc: Optional[str]
     quarters: Dict[str, float]
+    # Per-quarter margin breakdown, computed from the exact same monthly
+    # margin figures (and the same month_to_quarter() mapping) already
+    # used to compute `total_margin` below -- added to support the
+    # Summary workbook's Q1-Q4 "Margin" sub-columns without changing how
+    # margin itself is calculated (see aggregate_section()).
+    quarter_margins: Dict[str, float]
     total_revenue: float
     total_margin: float
     first_seen_row: int
@@ -94,6 +100,7 @@ def aggregate_section(
     for _, group_rows in grouped.items():
         display_name = group_rows[0].group
         quarters = {q: 0.0 for q in config.QUARTER_ORDER}
+        quarter_margins = {q: 0.0 for q in config.QUARTER_ORDER}
         total_margin = 0.0
         sheet_margin_sum = 0.0
         has_sheet_margin = False
@@ -105,7 +112,8 @@ def aggregate_section(
         for r in group_rows:
             for month, revenue in r.monthly_revenue.items():
                 quarters[month_to_quarter(month)] += revenue
-            for margin in r.monthly_margin.values():
+            for month, margin in r.monthly_margin.items():
+                quarter_margins[month_to_quarter(month)] += margin
                 total_margin += margin
             if r.sheet_total_margin is not None:
                 sheet_margin_sum += r.sheet_total_margin
@@ -120,6 +128,7 @@ def aggregate_section(
         total_margin = round(total_margin, 2)
         total_revenue = round(sum(quarters.values()), 2)
         quarters = {q: round(v, 2) for q, v in quarters.items()}
+        quarter_margins = {q: round(v, 2) for q, v in quarter_margins.items()}
 
         # Rule 6 / "Skipped Blank Groups": drop groups with zero revenue
         # AND zero margin - i.e. genuinely no activity this year.
@@ -178,6 +187,7 @@ def aggregate_section(
                 raw_sub_group=raw_sub_group,
                 poc=poc,
                 quarters=quarters,
+                quarter_margins=quarter_margins,
                 total_revenue=total_revenue,
                 total_margin=total_margin,
                 first_seen_row=first_seen,
@@ -344,6 +354,7 @@ def attach_historical(
                 total = 0.0 if g.has_renewal_confidence else None
                 if total is None:
                     stats.historical_missing.append(f"{g.group_name} ({year})")
+                source = "not_found"
 
             margin: Optional[float] = None
             if year in years_with_margin:

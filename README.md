@@ -47,7 +47,7 @@ unexplained.
 |---|---|
 | 1. Group by `Group` column, one row per unique Group | `aggregator._group_rows_in_order` |
 | 2. Q1=Jan+Feb+Mar, Q2=Apr+May+Jun, Q3=Jul+Aug+Sep, Q4=Oct+Nov+Dec | `config.QUARTER_MONTHS` + `aggregator.month_to_quarter` |
-| 3. Total = Q1+Q2+Q3+Q4 | Written as a **live Excel formula** `=SUM(Q1:Q4)` on every row, exactly like the human-built file |
+| 3. Total = Q1+Q2+Q3+Q4 | Written as a **live Excel formula** on every row (originally a contiguous `=SUM(Q1:Q4)`; now `=SUM(<Q1 Total>,<Q2 Total>,<Q3 Total>,<Q4 Total>)` by explicit cell reference since each quarter became 2 columns -- see §11.2), exactly like the human-built file |
 | 4. Margin = sum of every project's monthly Margin (Actual-Salary or the sheet's own Margin column) | `aggregator.aggregate_section` sums the existing per-month Margin column (Rule 4 explicitly allows this), and cross-checks the result against the sheet's own "Total Margin" column, flagging any mismatch in the validation report |
 | 5. Comments matched from `<year>_ClientComments`, `Client List` -> `Group` | `comment_mapper.CommentMapper` |
 | 6. Numeric blanks = 0, comment blanks = blank | `excel_reader.as_number` (blanks -> 0.0) and `aggregator.attach_comments` (no match -> `None`, left blank in the sheet) |
@@ -172,7 +172,8 @@ SalesForecastAutomation/
 ├── aggregator.py           # Rules 1-4 & 6: grouping, quarters, margin, skip-blank, sorting
 ├── comment_mapper.py        # Rule 5: ClientComments matching
 ├── historical_lookup.py     # Prior-year Total/Margin lookups (2 strategies, see below)
-├── summary_writer.py        # Builds the final formatted .xlsx
+├── monthly_view.py           # Worksheet 2's monthly Actual/Forecast breakdown (see §13)
+├── summary_writer.py        # Builds the final formatted .xlsx (both worksheets)
 ├── validator.py             # Validation report data model + renderer
 ├── main.py                  # CLI entry point / orchestration
 ├── requirements.txt
@@ -511,18 +512,29 @@ python tests/compare_with_manual.py
 ```
 
 Regenerates the Summary from the fixture Master workbook
-(`tests/fixtures/master_2026.xlsx`) and compares every populated cell
-against the golden manual file
-(`tests/fixtures/manual_summary_2026.xlsx`), printing every mismatch
-(sheet coordinate, row label, expected vs. actual) and exiting non-zero
-if any are found. It has no dependency on LibreOffice or pytest -- a
-small built-in evaluator resolves the project's own `=SUM(...)` range
-formulas (including the nested case where a subtotal row sums other
-formula cells), so the comparison works on the raw generated `.xlsx`
-without needing to open it in a real spreadsheet engine first.
+(`tests/fixtures/master_2026.xlsx`) and compares it against the golden
+manual file (`tests/fixtures/manual_summary_2026.xlsx`). Since the
+output *layout* changed (§11 -- each quarter is now two columns, Margin
+then Total, under a 3-row header instead of the golden file's 2-row,
+single-column-per-quarter layout), this test no longer assumes fixed
+cell coordinates on either side: it parses both header shapes
+dynamically by their own label text, matches rows between the two files
+by the text in their Name column (not by row number), and checks
+everything that existed in the old layout (Name, POC, prior-year
+Total/Margin, each quarter's revenue Total, the final yearly
+Total/Margin, Comments) plus one new self-consistency check that has no
+golden equivalent: every row's four new Quarter Margin sub-columns must
+sum to that row's final yearly Margin, since both are built from the
+exact same monthly-margin figures in aggregator.py. It has no
+dependency on LibreOffice or pytest -- a small built-in evaluator
+resolves the project's own `=SUM(...)` formulas, both the contiguous-
+range form subtotal rows use and the explicit comma-separated-cell-list
+form each data row's yearly Total now uses (needed because the four
+quarter Total sub-columns are no longer contiguous -- see §11).
 
-Re-run this test after any change to `config.py`, `aggregator.py`, or
-`historical_lookup.py` to catch a regression immediately.
+Re-run this test after any change to `config.py`, `aggregator.py`,
+`historical_lookup.py`, or `summary_writer.py` to catch a regression
+immediately.
 
 ```bash
 python tests/test_column_reordering.py
@@ -538,6 +550,31 @@ after any change to `excel_reader.py`, `aggregator.py`,
 bugs would have been visible from reading the code or from
 `compare_with_manual.py` alone (that test only ever exercises the
 Master workbook's *original* column order).
+
+```bash
+python tests/test_future_year_compatibility.py
+```
+
+Runs generation against every year the fixture workbook can meaningfully
+target, asserting years with a modern Group-column sheet succeed (even
+when the historical lookback reaches a year with no sheet in the
+workbook at all) and a legacy year with no Group column fails
+*gracefully* rather than crashing. This is what caught the pre-existing
+`UnboundLocalError` crash described in §11.4 -- run it after any change
+to `aggregator.py` or `historical_lookup.py`.
+
+```bash
+python tests/test_worksheet2_actual_forecast.py
+```
+
+Confirms Worksheet 2 (§13) exists under the correct dynamic
+"<year> Actual & Forecast" name, shows exactly the same groups in the
+same order as Worksheet 1, dynamically detects both "Actual" and
+"Forecast" month roles from the source sheet's own header (proving the
+month range isn't hardcoded), includes the Confidence/Comments columns,
+and -- critically -- that Worksheet 1 remains byte-for-byte stable
+across repeated runs. Run it after any change to `monthly_view.py` or
+to the parts of `summary_writer.py` that build Worksheet 2.
 
 ---
 
@@ -767,3 +804,428 @@ assets/
   meaningful equivalent for a remotely hosted deployment, which the
   button's caption notes explicitly, matching the brief's
   "(if supported)".
+
+
+## 11. Formatting & layout upgrade (borders, grouped quarters, currency, second sheet)
+
+> **Note:** §11.2 below describes each quarter's sub-columns as
+> "Margin, then Total" -- that was the order at the time this section
+> was written. It was changed to **Total, then Margin** in a later
+> round; see §12 for exactly what that involved. Kept here rather than
+> silently rewritten so the two sections together show the actual
+> history, not just the current state.
+
+Five presentational features were added on top of the existing engine.
+**No calculation was redesigned to build these** -- the only
+calculation-adjacent change was a small, additive one in `aggregator.py`
+(§11.2); every other change lives entirely in `summary_writer.py`
+(output formatting) or `config.py` (styling constants).
+
+### 11.1 Thin black borders on every populated cell
+
+`summary_writer.py` now tracks every row it writes (header rows, section
+heading/title banners, data rows, subtotal rows) in `self._content_rows`
+as it builds the sheet, then applies a thin black border
+(`config.BORDER_COLOR`) to every cell in those rows, across every
+column, in a final `_apply_borders()` pass. The blank spacer rows
+between sections (`OutputSection.blank_rows_after_*`) are deliberately
+left out of `_content_rows`, so they stay pure visual spacing rather
+than becoming a bordered empty row. Only `.border` is touched -- fills,
+fonts, alignment, merged cells, and number formats are untouched.
+
+### 11.2 Grouped Q1-Q4 columns (Margin + Total each)
+
+Each quarter is now two columns -- **Margin**, then **Total** -- under a
+merged "Q1"/"Q2"/"Q3"/"Q4" header, which turned the sheet's header from
+2 rows into 3 (year band / quarter-group-or-vertical label / Margin
+&#124; Total sub-label). `summary_writer._plan_columns()` and
+`_write_headers()` account for the extra row and the doubled-up quarter
+columns; every other section (banners, data rows, subtotals) shifted
+down by exactly one row to make room, with no other structural change.
+
+**Quarter Total** is untouched: still `GroupSummary.quarters`, the
+existing revenue aggregation.
+
+**Quarter Margin** required one small, additive change to
+`aggregator.py`: `GroupSummary` gained a `quarter_margins` field, and
+`aggregate_section()`'s existing monthly-margin loop --
+`for margin in r.monthly_margin.values(): total_margin += margin` --
+became `for month, margin in r.monthly_margin.items():
+quarter_margins[month_to_quarter(month)] += margin; total_margin +=
+margin`. This is the exact same monthly margin data and the exact same
+`month_to_quarter()` mapping already used for both the yearly Margin
+column and the Quarter Total columns -- it is bucketed one more way, not
+recalculated a different way. `tests/compare_with_manual.py`'s
+self-consistency check (every row's 4 new Quarter Margin values sum to
+that row's existing, already-validated yearly Margin) is what verifies
+this claim on every run, not just an assertion in this README.
+
+One mechanical consequence: the current-year yearly Total formula used
+to be a single contiguous range (`=SUM(F5:I5)`, back when Q1-Q4 were 4
+side-by-side columns). With a Margin column now sitting between every
+pair of quarters, a plain range would wrongly sum the Margin cells into
+the revenue Total -- so that formula now sums the four Total
+sub-columns by explicit cell reference instead (`=SUM(G5,I5,K5,M5)`).
+Same result, adjusted cell references, not a new methodology. The
+yearly Margin cell is unchanged: still `group.total_margin`, written as
+a static value exactly as before.
+
+### 11.3 Real Excel currency formatting
+
+`config.CURRENCY_FORMAT` changed from
+`_(* #,##0_);_(* \(#,##0\);_(* "-"??_);_(@_)` (Excel's built-in
+"Comma Style" -- no currency symbol) to
+`_($* #,##0_);_($* \(#,##0\);_($* "-"??_);_(@_)` (the built-in
+"Accounting" format with a `$`) -- same thousands separators, same
+parentheses-for-negative and dash-for-zero convention, just with the
+symbol turned on. Since every monetary column (prior-year Total/Margin,
+all 8 quarter Margin/Total sub-columns, final yearly Total/Margin) was
+already routed through this one constant in `_apply_sheet_formatting()`,
+changing it in one place applied the `$` everywhere it was asked for
+without touching `summary_writer.py`'s formatting loop at all. Cell
+values remain plain floats/ints throughout -- only the *display* format
+string changed, so sorting, filtering, and further calculation in Excel
+all continue to work exactly as before.
+
+### 11.4 A pre-existing bug found while verifying "future-year compatibility"
+
+While confirming the new layout didn't break dynamic year detection,
+running the tool against `--year 2025` (whose lookback needs a "2023"
+sheet the fixture workbook doesn't have) crashed with
+`UnboundLocalError: cannot access local variable 'source'` in
+`aggregator.attach_historical`. Reproducing the same run against the
+**unmodified, originally uploaded project** confirmed this was already
+present -- unrelated to any of the five features above.
+
+The cause: one branch of `attach_historical`'s total/margin resolution
+(the "no embedded reference and no match anywhere" case) never assigned
+its local `source` bookkeeping variable, which a later, unconditional
+line then always read. It's guaranteed to trigger whenever the
+historical lookback reaches a year with literally no corresponding
+sheet in the workbook -- which is exactly what "future-year
+compatibility" needs to keep working for the years *nearest* a
+workbook's edges, not just new ones being added at the end. Confirmed
+before fixing that `historical_source` is written to in exactly one
+place and **read nowhere else in the codebase** (`grep -rn
+"historical_source"` across every `.py` file), so the one-line fix
+(give that branch a `source = "not_found"` value) changes no calculated
+number anywhere -- it only stops the crash. `tests/compare_with_manual.py`
+was re-run immediately after and showed the identical 10 pre-existing
+differences (see §6), confirming zero effect on the 2026 output this
+project has been validated against throughout. A permanent regression
+test, `tests/test_future_year_compatibility.py`, now locks this in.
+
+### 11.5 Second worksheet (no logic yet)
+
+`SummaryWriter.build()` now also creates
+`wb.create_sheet(title=f"{self.target_year} Actual & Forecast")` --
+e.g. "2026 Actual & Forecast" -- right after building the main Summary
+sheet, with a single italic placeholder cell and no other content. As
+requested, no business logic was added for it; it exists purely so the
+tab is present and correctly named for whatever gets built into it next.
+
+### 11.6 What stayed exactly the same
+
+`excel_reader.py`, `comment_mapper.py`, `historical_lookup.py`, and
+`validator.py` were not touched at all. `config.py` gained one styling
+constant (`BORDER_COLOR`) and one format-string edit (`CURRENCY_FORMAT`)
+-- no business-rule constant changed. `aggregator.py`'s only changes are
+the additive `quarter_margins` field/computation (§11.2) and the
+one-line crash fix (§11.4); `total_margin`, `total_revenue`, and
+`quarters` are computed exactly as before, from the exact same source
+data, in the exact same order. Dynamic year/sheet/header/column
+detection, the Streamlit app, the desktop GUI, and the validation report
+were all re-verified end-to-end against the new output and required no
+changes at all -- confirmed by `grep`ing the whole project for any other
+reference to the writer's internal column layout (`quarter_cols`,
+`col_current_total`, etc.) and finding none outside
+`summary_writer.py`/`aggregator.py` themselves.
+
+
+## 12. Quarter sub-column order: Total before Margin
+
+Each quarter's two sub-columns are now **Total, then Margin** (was
+Margin, then Total in the previous round). This was the only functional
+change requested this round -- currency formatting, borders, and the
+second worksheet were already in place and needed no changes at all.
+
+### 12.1 What changed, and what deliberately didn't
+
+Only two files changed:
+
+- **`summary_writer.py`** -- `_plan_columns()`'s
+  `self.quarter_cols[q] = {"total": idx, "margin": idx + 1}` now assigns
+  the lower column index to `"total"` (previously `"margin"` got it).
+  The header-writing code that draws the merged "Q1".."Q4" group band
+  and its Total/Margin sub-labels was also changed from hardcoding
+  which key comes first to resolving it via `min()`/`max()` of
+  `self.quarter_cols[q].values()` -- so this is no longer a place where
+  the on-screen order could silently drift out of sync with
+  `_plan_columns()`'s own ordering again. Everything else that touches a
+  quarter column -- writing its value, building the yearly Total's
+  `=SUM(...)` cell-reference list, applying the currency format, sizing
+  the column -- already looked columns up by the `"total"`/`"margin"`
+  dictionary key rather than by position, so none of it needed to
+  change at all.
+- **`tests/compare_with_manual.py`** -- its header parser had the *old*
+  order baked in as an assumption ("row 3's first sub-column is Margin,
+  the second is Total") to figure out which generated column was which.
+  That assumption broke the moment the real order flipped, producing 23
+  false "quarter margins don't sum to the yearly margin" failures that
+  had nothing to do with the generated numbers (which were correct) --
+  purely a stale assumption in the test itself. Fixed the same way the
+  generator itself is architected: read row 3's actual text at each of
+  the two sub-columns and assign `"total"`/`"margin"` by *what the label
+  says*, not by which position it sits in. Re-run afterwards, the test
+  is back to the same 10 pre-existing, documented differences from §6,
+  and the quarter-margin consistency check passes cleanly.
+
+**`config.py` and `aggregator.py` were not touched this round** --
+currency formatting (`CURRENCY_FORMAT`), border color, and the
+`quarter_margins` computation were all already correct from the previous
+round; only *where on the sheet* each already-correct value gets placed
+changed.
+
+### 12.2 Verified
+
+- Formula recalculation: 0 errors (58 formulas), and the yearly Total
+  formula's cell references automatically followed the new column
+  positions (e.g. `=SUM(F7,H7,J7,L7)` now referencing the four Total
+  sub-columns in their new, lower-indexed slots) with no change needed
+  to the code that builds that formula string -- it was already looking
+  up `cols["total"]` by name.
+- `tests/compare_with_manual.py`: same 10 pre-existing differences as
+  every prior round (§6), 0 new ones; the quarter-margin self-consistency
+  check passes for every row.
+- `tests/test_column_reordering.py`: all 8 shuffled-column seeds still
+  match the baseline exactly (unaffected -- this test only exercises
+  *input* column order, never the *output* layout).
+- `tests/test_future_year_compatibility.py`: all 3 scenarios still
+  behave correctly.
+- Streamlit: full upload -> generate -> download flow re-tested in a
+  real browser; the downloaded workbook shows the new Total-then-Margin
+  order.
+- Desktop GUI backend (`gui.runner.generate_summary`): re-tested
+  directly; produces the identical output the CLI and Streamlit do.
+
+
+## 13. Worksheet 2: "<year> Actual & Forecast"
+
+A second worksheet, dynamically named e.g. "2026 Actual & Forecast", now
+shows the same groups Worksheet 1 already validated at monthly
+granularity -- each month's own Actual/Forecast role, that month's
+revenue and margin, then Total/Margin/Confidence/Comments -- instead of
+Worksheet 1's quarterly view.
+
+### 13.1 Which files were analyzed before writing any code, and why sourcing matters
+
+Two candidate source workbooks were provided: the existing Master
+workbook (`Sales by Customer- <year>`, already Worksheet 1's source) and
+a second, separately-maintained "NK" workbook. Both were opened and
+compared cell-by-cell before any implementation decision was made:
+
+- **The NK workbook** has no Margin column anywhere -- not for one
+  month, not for any month -- confirmed by dumping every header cell in
+  both its type row and field row. It labels its forecast months
+  "Outlook", not "Forecast". Its own Q1-Q4/Total columns are plain
+  `=SUM()` formulas over its own Jan-Dec columns (self-contained for
+  revenue), and it additionally contains "Projection" and "Prospecting"
+  sections -- covering Sub-Group codes like `DS30_Projection` and
+  `DS90_Secured` -- that Worksheet 1 has deliberately never included
+  (they appear in every validation report's "Unmapped Sub-Groups" list).
+- **The Master workbook** already has a Margin figure for every single
+  month, for every project row, for both Actual and Forecast periods --
+  the same figures already summed into Worksheet 1's Margin columns --
+  and its own type-header row already says "Actual" / "Forecast"
+  verbatim (confirmed by reading `Sales by Customer- 2026`'s row 1
+  directly), which is the exact terminology requested and requires zero
+  new keyword handling (`config.REVENUE_ROLE_KEYWORDS` already lists
+  both).
+- **Cross-check:** AIS Solutions' Jan-Jun revenue was compared cell by
+  cell between the two workbooks and matches exactly, confirming both
+  describe the same underlying business reality for the scope Worksheet
+  1 covers -- the Master workbook is simply the superset (adds margin,
+  uses the requested terminology already, and is the single source
+  already powering Worksheet 1, guaranteeing both worksheets in the
+  same output file are always internally consistent with each other).
+
+**Conclusion, evidence-based rather than assumed: the Master workbook
+alone is the source for Worksheet 2.** The NK workbook was not used for
+any computation -- it served only as corroborating evidence for this
+decision and as a visual reference for the requested layout. This is
+also why Worksheet 2 shows the same 32 groups as Worksheet 1, not the
+NK workbook's larger set: extending scope to include `DS90_Secured` (or
+the Projection/Prospecting sections) would mean deciding, on Claude's
+own authority, that a Sub-Group code excluded from Worksheet 1's
+validated `config.OUTPUT_SECTIONS` should be included after all -- which
+is a business decision, not a formatting one, and is flagged below in
+§13.5 rather than made silently.
+
+### 13.2 What was reused vs. what is genuinely new
+
+Nothing in `excel_reader.py`, `aggregator.py`, `comment_mapper.py`,
+`historical_lookup.py`, `validator.py`, or `config.py`'s business rules
+(`OUTPUT_SECTIONS`, DS-code mapping, role keywords) was modified.
+Worksheet 2 is built from a new, additive module, **`monthly_view.py`**,
+which:
+
+- reuses the exact same `ProjectRow.monthly_revenue` /
+  `.monthly_margin` dictionaries `excel_reader.py` already parsed for
+  Worksheet 1 -- these are keyed by calendar month 1-12 and were already
+  being computed; `aggregator.py` just throws that granularity away
+  once it has summed them into quarters. This module keeps it instead
+  of summing it away, which is why no new parsing exists anywhere;
+- reuses the exact same grouping key (`normalize_name(row.group)`) and
+  the exact same per-section Sub-Group/DS-code filter
+  (`section.ds_codes`) `aggregator.aggregate_section` already uses;
+- reuses the exact same **group list** Worksheet 1 already computed and
+  validated -- `monthly_view.build_monthly_sections` takes
+  `section_results` (Worksheet 1's already-aggregated, comment-matched,
+  Rule-6-filtered `GroupSummary` objects) as an input and only adds a
+  monthly breakdown on top of groups that already exist. It never
+  independently decides whether a group belongs in the Summary;
+- reuses each group's already-matched `GroupSummary.comment` for
+  Worksheet 2's Comments column, instead of querying the
+  ClientComments sheet a second time;
+- reuses each group's already-computed `GroupSummary.total_margin` for
+  Worksheet 2's yearly Margin column, as a static value, exactly the
+  same convention Worksheet 1's own final Margin column already uses
+  (not re-derived from the monthly figures via a new formula).
+
+The only genuinely new logic is:
+
+1. **Re-bucketing monthly figures by month instead of by quarter** --
+   the same underlying numbers, kept at finer granularity instead of
+   discarded.
+2. **`resolve_month_roles()`** -- reads each month's own type-header
+   cell directly (the same cell `build_column_map` already inspected to
+   decide "this is a revenue column", just read again for its literal
+   text: "Actual" or "Forecast", verbatim, whatever the sheet says) and
+   returns `{month: role_text}`. Nothing about which calendar months are
+   "Actual" vs "Forecast" is hardcoded anywhere -- if a future workbook
+   moves the Actual/Forecast boundary to a different month, or a role
+   label changes, this keeps working unmodified because it reads the
+   sheet's own words rather than assuming a fixed range. (The literal
+   phrase "Outlook" never needed to be replaced anywhere in code -- the
+   Master workbook already says "Forecast".)
+3. **Confidence**, read directly from the sheet's own Renewal Confidence
+   column (`cmap.renewal_confidence`, already resolved by the unmodified
+   `build_column_map`) via each `ProjectRow`'s own `row_index`, with a
+   `Counter.most_common()` reduction across a group's rows -- the exact
+   same reduction pattern `aggregator.py` already uses for `poc` and
+   `raw_sub_group`.
+
+### 13.3 Column layout and formatting
+
+```
+Name | POC | <Role> <Mon> | Margin | <Role> <Mon> | Margin | ... | Total | Margin | Confidence | Comments
+```
+
+`<Role>` and the set of months are both fully dynamic (driven by
+whatever `resolve_month_roles()` finds); nothing assumes 12 months, a
+Jan-start, or any particular Actual/Forecast split. Each row's Total is
+a live `=SUM(...)` formula over that row's own monthly value cells --
+mirroring Worksheet 1's Total-formula convention, and, like Worksheet
+1's yearly Total, referencing the value columns by explicit comma-
+separated cell list (`=SUM(C6,E6,G6,...)`) rather than a contiguous
+range, since each month's Margin column sits between them. Section
+banners, subtotal rows, and blank-row spacing reuse the exact same
+`config.OutputSection` fields (`heading`, `title`, `subtotal_label`,
+`blank_rows_after_*`) that already drive Worksheet 1's layout, so the
+two sheets stay visually and structurally consistent automatically.
+
+Formatting matches Worksheet 1 exactly -- same `config.FONT_NAME` /
+`FONT_SIZE`, same `HEADER_FILL` / `SECTION_FILL` / `SUBHEADING_FILL` /
+`SUBTOTAL_FILL`, same `CURRENCY_FORMAT` (a real `$`, applied to every
+monthly value/margin cell plus the final Total/Margin), and the same
+thin-black-border-on-every-populated-cell treatment as Worksheet 1's
+Feature 1 (blank spacer rows between sections are, as on Worksheet 1,
+deliberately left unbordered). The only new styling constant added is
+`config.CONFIDENCE_COLUMN_WIDTH` -- a column width, not a business rule.
+A new helper, `SummaryWriter._write_plain_banner`, mirrors
+`_write_banner_row`'s exact visual behaviour for Worksheet 2's own,
+differently-sized column count, so Worksheet 1's own `_write_banner_row`
+never needed to change.
+
+### 13.4 Wiring: what changed in main.py / gui/runner.py
+
+Both already call the same sequence of steps to build `section_results`
+for Worksheet 1 (`gui/runner.py`'s own docstring describes it as
+mirroring `main.py` "step-for-step" for GUI progress reporting -- that
+duplication is pre-existing, not introduced here). Each gained the same
+two-line addition immediately before the existing `writer.build(...)`
+call:
+
+```python
+month_roles = resolve_month_roles(ws_main, cmap)
+monthly_section_results = build_monthly_sections(rows, cmap, ws_main, section_results)
+wb = writer.build(section_results, monthly_section_results, month_roles)
+```
+
+`SummaryWriter.build()`'s signature gained two *optional* trailing
+parameters specifically so this remains backward compatible; a
+defensive fallback (a bare placeholder sheet, the same one this feature
+replaces) fires only if a hypothetical future caller omits them.
+
+### 13.5 Business rules that were confidently implemented vs. ones flagged rather than invented
+
+**Implemented with direct evidence from the uploaded workbooks:**
+- Which months are Actual vs Forecast (read from the sheet's own header).
+- Monthly Margin "where applicable" -- read from a group's real
+  monthly-margin figures wherever they exist; a group with no tracked
+  activity for a month shows 0, the same convention Worksheet 1 already
+  uses for its own quarter cells (see §6 for the pre-existing Rule 6
+  blank-vs-zero distinction, which continues to apply at the *group*
+  level, not per calendar month).
+- Confidence and Comments, both sourced from already-existing, already-
+  discovered columns.
+
+**Flagged rather than invented, because the evidence was genuinely
+ambiguous or would require a business decision Claude has no authority
+to make silently:**
+- **`DS90_Secured`** (JSG, Mastek, MatchPoint Solutions, Maxonic,
+  Technology Partners, VDart -- all present in the Master workbook,
+  confirmed by direct lookup) is treated as "Staffing- Secured" business
+  by the NK workbook's own manual categorization, but is excluded from
+  `config.OUTPUT_SECTIONS`'s `ds_codes=[70, 80, 85]` for that section.
+  Worksheet 2 currently mirrors Worksheet 1's validated scope (i.e.
+  excludes it) rather than silently expanding what "Staffing- Secured"
+  means. If this code should be included going forward, that is a
+  one-line change to `config.OUTPUT_SECTIONS` -- but it changes
+  Worksheet 1's output too, so it needs an explicit decision, not an
+  assumption made while building Worksheet 2.
+- **Track 2 / Projection / Prospecting** sections (visible in the NK
+  workbook, covering DS-codes such as `DS30_Projection` and
+  `DS50_Projection`) are out of scope for the same reason: no validated
+  mapping of these Sub-Group codes to Summary sections exists anywhere
+  in the current pipeline, and inventing one was explicitly out of
+  bounds for this task.
+
+### 13.6 Verified
+
+- Cell-by-cell diff of Worksheet 1 between this version's output and
+  the previously-delivered output workbook, run against the identical
+  Master workbook: **0 differences** in content, and separately, **0
+  differences** in number format, border, fill, font, merged-cell
+  layout, freeze panes, or gridline setting.
+- `tests/compare_with_manual.py`: same 10 pre-existing, already-
+  documented differences as every prior round (§6) -- 0 new ones.
+- `tests/test_column_reordering.py` (8 seeds) and
+  `tests/test_future_year_compatibility.py`: unaffected, all pass.
+- New: `tests/test_worksheet2_actual_forecast.py` -- confirms Worksheet
+  2 exists under the correct dynamic name, shows the same 32 groups in
+  the same order as Worksheet 1, dynamically shows both "Actual" and
+  "Forecast" role labels (proving this wasn't hardcoded), includes the
+  Confidence/Comments columns, and that Worksheet 1 is byte-for-byte
+  stable across repeated runs.
+- Formula recalculation across the whole workbook (both sheets): 0
+  errors, 142 formulas, using the attached real Master workbook.
+- Streamlit: full upload -> generate -> download flow re-tested in a
+  real browser against the actual uploaded Master workbook; downloaded
+  file contains both sheets correctly.
+- Desktop GUI backend (`gui.runner.generate_summary`): re-tested
+  directly against the same file; produces the identical two-sheet
+  output.
+- Dynamic naming re-verified for a second target year (2025): sheet is
+  named "2025 Actual & Forecast" with no code change, confirming no year
+  is hardcoded anywhere in the new code.

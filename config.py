@@ -201,12 +201,42 @@ HISTORICAL_OVERRIDES: Dict[tuple, float] = {}
 # --------------------------------------------------------------------------
 FONT_NAME = "Calibri"
 FONT_SIZE = 10
-CURRENCY_FORMAT = r'_(* #,##0_);_(* \(#,##0\);_(* "-"??_);_(@_)'
+# Standard Excel "Currency" format (not "Accounting") -- the $ sits
+# directly against the number instead of being left-padded with the
+# Accounting style's `_(`/`*` alignment tokens. This is not a guess: it
+# is the exact number format read from the Aug 6 NK workbook's own
+# "Total Revenue"/"Total Margin" columns (Sales by Customer- 2026,
+# columns AN/AO) -- confirmed to render negatives as "-$1,234" (a plain
+# minus sign), matching this single-section format's default behaviour.
+CURRENCY_FORMAT = '"$"#,##0'
 HEADER_FILL = "FFD9E1F2"
 SECTION_FILL = "FFBFBFBF"
 SUBHEADING_FILL = "FFE7E6E6"
 SUBTOTAL_FILL = "FFCCFFFF"
+# Fill colors read directly from the Aug 6 NK workbook rather than
+# approximated. TOTAL_MARGIN_HEADER_FILL (yellow) is the literal RGB of
+# that workbook's "Total Revenue"/"Total Margin" summary-column headers
+# (Sales by Customer- 2026, columns AN/AO) -- kept scoped to just the
+# final yearly Total/Margin header cells in both of this project's
+# worksheets, matching that source column's own distinct header style.
+#
+# TOTAL_DATA_FILL (green) and MARGIN_DATA_FILL (orange) are the fills
+# that workbook uses on EVERY recurring revenue/margin column, not just
+# the final summary ones -- its monthly "Actual"/"Forecast" columns use
+# the same green as "Total Revenue" (theme 9/accent6), and its monthly
+# "Margin" columns use a separate orange (theme 5/accent2), both at the
+# same ~0.6 tint. Both are theme colors in the source file, resolved
+# here to their exact rendered RGB via the standard OOXML HSL-tint
+# formula and cross-checked by pixel-sampling a rendered copy of that
+# workbook -- both methods agree exactly for both colors -- so the
+# same visual colors apply in this project's own generated workbook
+# regardless of which theme it uses.
+TOTAL_MARGIN_HEADER_FILL = "FFFFFF00"
+TOTAL_DATA_FILL = "FFB4E5A2"
+MARGIN_DATA_FILL = "FFF6C6AD"
+BORDER_COLOR = "FF000000"  # thin black border applied to every populated cell
 COMMENTS_COLUMN_WIDTH = 70
 NAME_COLUMN_WIDTH = 24
 POC_COLUMN_WIDTH = 15
 NUMBER_COLUMN_WIDTH = 11
+CONFIDENCE_COLUMN_WIDTH = 12  # Worksheet 2's "Confidence" column (e.g. "100%")

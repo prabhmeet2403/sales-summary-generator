@@ -35,6 +35,7 @@ from excel_reader import (
 from comment_mapper import CommentMapper
 from historical_lookup import HistoricalLookup
 from aggregator import aggregate_section, sort_groups, attach_comments, attach_historical
+from monthly_view import build_monthly_sections, resolve_month_roles
 from summary_writer import SummaryWriter
 from validator import ValidationReport
 
@@ -194,7 +195,9 @@ def main(argv=None) -> int:
             section_results.append((section, groups))
 
         writer = SummaryWriter(target_year, prior_years, years_with_margin)
-        wb = writer.build(section_results)
+        month_roles = resolve_month_roles(ws_main, cmap)
+        monthly_section_results = build_monthly_sections(rows, cmap, ws_main, section_results)
+        wb = writer.build(section_results, monthly_section_results, month_roles)
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir / output_filename

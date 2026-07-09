@@ -45,7 +45,7 @@ def render_floating_assistant(gen_result: object) -> None:
 
     if not is_open:
         with toggle_slot.container():
-            if st.button("✨", key="floating_assistant_toggle_btn", help="Chatbot Prabh"):
+            if st.button("✨", key="floating_assistant_toggle_btn", help="Sales Assistant"):
                 st.session_state[_OPEN_KEY] = True
                 is_open = True
         if not is_open:
@@ -68,7 +68,7 @@ def render_floating_assistant(gen_result: object) -> None:
     # timing issues elsewhere in this app.
     panel_slot.empty()
     with toggle_slot.container():
-        st.button("✨", key="floating_assistant_toggle_btn", help="Chatbot Prabh")
+        st.button("✨", key="floating_assistant_toggle_btn", help="Sales Assistant")
 
 
 def _render_panel(gen_result: object) -> bool:
@@ -86,7 +86,7 @@ def _render_panel(gen_result: object) -> bool:
     header_col, close_col = st.columns([6, 1])
     with header_col:
         st.markdown(
-            '<div class="copilot-title">✨ Chatbot Prabh</div>'
+            '<div class="copilot-title">✨ Sales Assistant</div>'
             '<div class="copilot-subtitle">Ask questions about the generated '
             "Sales &amp; Forecast Summary.</div>",
             unsafe_allow_html=True,
@@ -190,7 +190,7 @@ def _render_not_configured() -> None:
         '<div class="copilot-config-card">'
         '<div class="copilot-config-icon">⚠</div>'
         '<div class="copilot-config-title">AI isn\'t configured yet</div>'
-        "<p>Chatbot Prabh has been installed successfully.</p>"
+        "<p>Sales Assistant has been installed successfully.</p>"
         "<p><strong>To enable AI:</strong></p>"
         "<ol><li>Configure Bedrock credentials</li><li>Restart the application</li></ol>"
         '<div class="copilot-config-doclink">Setup Guide — ai/README.md</div>'

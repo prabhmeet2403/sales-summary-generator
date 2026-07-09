@@ -1,4 +1,4 @@
- # Secrets -- never commit real credentials.
+# Secrets -- never commit real credentials.
 .env
 
 # Python
@@ -16,6 +16,3 @@ dist/
 output/*.xlsx
 logs/*.log
 logs/*.txt
-
-input/*
-!input/.gitkeep

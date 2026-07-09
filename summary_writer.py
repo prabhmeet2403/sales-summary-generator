@@ -56,6 +56,7 @@ from __future__ import annotations
 import calendar
 import re
 import zipfile
+import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
@@ -134,6 +135,10 @@ def _format_cached_number(value: float) -> str:
     return repr(rounded)
 
 
+_SML_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+ET.register_namespace("", _SML_NS)  # write plain <c>, not <ns0:c>, on re-serialization
+
+
 def _inject_cached_formula_values(path, entries: List[Tuple[str, str, float]]) -> None:
     """After ``wb.save(path)``, patch in a cached numeric result
     alongside each live formula cell tracked in ``entries`` (a list of
@@ -147,6 +152,20 @@ def _inject_cached_formula_values(path, entries: List[Tuple[str, str, float]]) -
     already writes next to every formula's ``<f>`` element; it does not
     touch the formula itself, add a cell, or change any other part of
     the file.
+
+    Each target sheet's XML is parsed into a real element tree
+    (``xml.etree.ElementTree``) and edited via the tree API -- finding
+    each ``<c>`` by its ``r`` attribute and setting its ``<v>`` child's
+    text -- then re-serialized as a whole, rather than by locating and
+    splicing substrings by hand. Every edit therefore starts from, and
+    produces, a parsed (by definition well-formed) tree: there is no
+    way for this to emit a mismatched or duplicated tag, which a naive
+    string/regex splice of raw XML text does not equally guarantee (an
+    earlier version of this function did exactly that, and it produced
+    invalid OOXML -- e.g. a stray, unmatched `</v>` -- whenever a `<v>`
+    element wasn't already empty; Excel's repair dialog on
+    `/xl/worksheets/sheet1.xml` and `/xl/worksheets/sheet2.xml` was that
+    defect, not anything about which cells get a cached value).
     """
     if not entries:
         return
@@ -195,41 +214,43 @@ def _inject_cached_formula_values(path, entries: List[Tuple[str, str, float]]) -
         sheet_path = _resolve_sheet_path(sheet_title)
         if sheet_path is None or sheet_path not in modified_items:
             continue  # defensive: never fail the whole save over a cosmetic patch
-        xml_text = modified_items[sheet_path].decode("utf-8")
-        for coordinate, value in cell_entries:
-            xml_text = _patch_cell_cached_value(xml_text, coordinate, value)
-        modified_items[sheet_path] = xml_text.encode("utf-8")
+        patched_xml = _patch_sheet_cached_values(modified_items[sheet_path], cell_entries)
+        if patched_xml is not None:
+            modified_items[sheet_path] = patched_xml
 
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in infolist:
             zout.writestr(item, modified_items[item.filename])
 
 
-def _patch_cell_cached_value(xml_text: str, coordinate: str, value: float) -> str:
-    """Fill in the (already-present but empty) ``<v>`` element for one
-    formula cell -- e.g. turning ``<c r="C35" ...><f>SUM(C6:C33)</f><v></v></c>``
-    into the same cell with ``<v>123.45</v>``. Does nothing (rather than
-    raising) if that exact cell isn't found, since this is a cosmetic
-    "show the number immediately" patch layered on top of an already
-    fully-correct workbook -- it must never be able to turn a successful
-    generation into a failed one.
+def _patch_sheet_cached_values(sheet_xml: bytes, cell_entries: List[Tuple[str, float]]) -> Optional[bytes]:
+    """Parse one worksheet's XML, set the cached ``<v>`` value for each
+    ``(coordinate, value)`` in ``cell_entries``, and return the
+    re-serialized bytes -- or ``None`` (leaving that sheet's original
+    bytes untouched) if the XML can't be parsed, since this is a
+    cosmetic "show the number immediately" patch layered on top of an
+    already fully-correct workbook and must never be able to turn a
+    successful generation into a failed or corrupted one.
     """
-    anchor = f'r="{coordinate}"'
-    cell_start = xml_text.find(anchor)
-    if cell_start == -1:
-        return xml_text
-    cell_end = xml_text.find("</c>", cell_start)
-    next_cell = xml_text.find("<c ", cell_start + len(anchor))
-    if cell_end == -1 or (next_cell != -1 and next_cell < cell_end):
-        return xml_text  # malformed/unexpected shape -- leave untouched
+    try:
+        root = ET.fromstring(sheet_xml)
+    except ET.ParseError:
+        return None
 
-    cell_xml = xml_text[cell_start:cell_end]
-    formatted = _format_cached_number(value)
-    if "<v>" in cell_xml or "<v/>" in cell_xml:
-        patched_cell = re.sub(r"<v\s*/?>(?:</v>)?", f"<v>{formatted}</v>", cell_xml, count=1)
-    else:
-        patched_cell = cell_xml + f"<v>{formatted}</v>"
-    return xml_text[:cell_start] + patched_cell + xml_text[cell_end:]
+    cell_by_coordinate = {c.get("r"): c for c in root.iter(f"{{{_SML_NS}}}c")}
+    for coordinate, value in cell_entries:
+        cell = cell_by_coordinate.get(coordinate)
+        if cell is None:
+            continue  # defensive: this specific cell wasn't found -- skip, don't fail
+        value_elem = cell.find(f"{{{_SML_NS}}}v")
+        if value_elem is None:
+            value_elem = ET.SubElement(cell, f"{{{_SML_NS}}}v")
+        value_elem.text = _format_cached_number(value)
+
+    # `xml_declaration=False` matches openpyxl's own convention for this
+    # file (no `<?xml ... ?>` prologue on any part it writes) -- purely
+    # cosmetic; Excel accepts a part with or without one.
+    return ET.tostring(root, encoding="UTF-8", xml_declaration=False)
 
 
 class SummaryWriter:

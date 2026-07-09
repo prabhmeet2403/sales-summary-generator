@@ -24,6 +24,15 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
+
+# Loads a .env file from the project root into the process environment,
+# for local development convenience (see .env.example). Does nothing if
+# no .env file is present, and never overrides a variable that is
+# already set in the real environment -- a production deployment that
+# sets these as actual environment variables is unaffected either way.
+load_dotenv()
+
 import streamlit as st
 
 from components.ui import (
@@ -132,6 +141,15 @@ def _resolve_upload_state() -> None:
     the same run instead of lagging one rerun behind. Pure state
     management; no rendering happens here."""
     new_file = st.session_state.get("master_upload")
+    # The `master_upload` file_uploader widget only exists while the
+    # Upload & Generate page is actually being rendered -- on any other
+    # page, reading its session_state key back as None means "this
+    # widget wasn't instantiated this run," not "the user removed the
+    # file." Without this guard, simply navigating to a different page
+    # (Settings, About, or the AI Assistant added in Phase 2) would be
+    # misread as a file removal and silently clear gen_result along
+    # with everything else _reset_for_new_upload() clears.
+    on_upload_page = st.session_state.get("nav", "upload") == "upload"
 
     if new_file is not None:
         fingerprint = (new_file.name, new_file.size)
@@ -145,8 +163,22 @@ def _resolve_upload_state() -> None:
             st.session_state["master_path"] = master_path
             st.session_state["upload_name"] = f"{new_file.name} \u00b7 {_fmt_size(new_file.size)}"
             st.session_state["_upload_fingerprint"] = fingerprint
-    elif new_file is None and st.session_state.get("_upload_fingerprint"):
-        # User removed the file from the uploader widget.
+    elif (
+        new_file is None
+        and on_upload_page
+        and st.session_state.get("_upload_fingerprint")
+        and not (st.session_state.get("gen_result") and st.session_state["gen_result"].success)
+    ):
+        # User removed the file from the uploader widget before
+        # generating anything. Once a Summary has already been
+        # successfully generated, the widget reporting "no file" is
+        # ambiguous -- it's at least as likely to be Streamlit not
+        # preserving the widget's value across a period it wasn't
+        # rendered (e.g. the user visited another page and came back)
+        # as it is a deliberate attempt to discard a completed result.
+        # Uploading a genuinely different file is unaffected by this
+        # guard and still resets everything correctly via the
+        # fingerprint check above.
         _reset_for_new_upload()
         st.session_state.pop("_upload_fingerprint", None)
 
@@ -394,7 +426,10 @@ if "nav" not in st.session_state:
 _resolve_upload_state()
 render_sidebar()
 
+from ai.ui.floating_widget import render_floating_assistant
+
 _result = st.session_state.get("gen_result")
+render_floating_assistant(_result)
 _status = "ready" if (_result and _result.success) else None
 topbar(status_label="Summary Ready" if _status == "ready" else None)
 
@@ -407,6 +442,11 @@ if _nav == "upload":
         status=_status,
     )
     _render_upload_page()
+elif _nav == "ai":
+    page_header("Chatbot Prabh", "Ask questions about the generated Sales &amp; Forecast Summary.")
+    from ai.ui import chat_page
+
+    chat_page.render(_result)
 elif _nav == "settings":
     page_header("Settings", "Application configuration.")
     _settings_page()

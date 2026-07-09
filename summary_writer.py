@@ -54,6 +54,8 @@ business logic yet.
 from __future__ import annotations
 
 import calendar
+import re
+import zipfile
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
@@ -72,12 +74,174 @@ THIN_BLACK_BORDER = Border(
 )
 
 
+def _sum_formula_cached_value(ws: Worksheet, formula: str) -> float:
+    """Evaluate a `=SUM(...)` formula this module just wrote, purely by
+    reading the already-written sibling cells it references on the same
+    sheet -- no business logic, just arithmetic on numbers already
+    sitting on the sheet. Supports exactly the two shapes this module
+    ever writes: a comma-separated list of cell refs
+    (``=SUM(F5,H5,J5,L5)``) and a single contiguous range
+    (``=SUM(C6:C33)``). This never invents or recomputes a business
+    figure -- it can only ever reproduce the same number the formula
+    itself would show once Excel (or any other viewer) evaluates it.
+
+    A referenced cell may itself hold another ``=SUM(...)`` formula
+    (e.g. a subtotal row summing a column of per-group Total cells,
+    each of which is itself a formula over that row's own quarter
+    cells) -- resolved by recursing into the same evaluator, since
+    openpyxl's in-memory ``Cell.value`` for a formula cell is the
+    formula text itself, not a number. This always terminates: every
+    formula this module writes only ever references cells written
+    earlier in the same top-down build, bottoming out at a literal
+    numeric cell.
+    """
+    inner = formula[1:] if formula.startswith("=") else formula
+    match = re.fullmatch(r"SUM\((.+)\)", inner, re.IGNORECASE)
+    if not match:
+        raise ValueError(f"Unsupported formula shape for cached-value evaluation: {formula!r}")
+    body = match.group(1)
+
+    def _resolve(cell) -> float:
+        value = cell.value
+        if isinstance(value, (int, float)):
+            return value
+        if isinstance(value, str) and value.startswith("="):
+            return _sum_formula_cached_value(ws, value)
+        return 0.0
+
+    total = 0.0
+    if "," in body:
+        for ref in body.split(","):
+            total += _resolve(ws[ref.strip()])
+    else:
+        start_ref, end_ref = body.split(":")
+        for row in ws[f"{start_ref.strip()}:{end_ref.strip()}"]:
+            for cell in row:
+                total += _resolve(cell)
+    return total
+
+
+def _format_cached_number(value: float) -> str:
+    """Render a cached numeric value for the `<v>` element the same way
+    a whole-number float should look (``"0"``, not ``"0.0"``) while
+    avoiding float-arithmetic artifacts for fractional values -- Excel's
+    own numeric XML parser accepts either form identically, so this only
+    needs to be a valid, clean numeric literal, not a byte-for-byte match
+    of openpyxl's own (undocumented) formatting."""
+    rounded = round(value, 6)
+    if rounded == int(rounded):
+        return str(int(rounded))
+    return repr(rounded)
+
+
+def _inject_cached_formula_values(path, entries: List[Tuple[str, str, float]]) -> None:
+    """After ``wb.save(path)``, patch in a cached numeric result
+    alongside each live formula cell tracked in ``entries`` (a list of
+    ``(sheet_title, cell_coordinate, value)``), so every formula cell
+    this module wrote displays its correct number the instant the
+    workbook is opened -- in Excel's Normal Open, Protected View, a
+    Quick Look/preview pane, or any other viewer that renders a cell's
+    last-saved cached value without running a calculation engine --
+    rather than depending on that viewer to recalculate on load. This
+    only fills in the same (currently-empty) ``<v>`` element openpyxl
+    already writes next to every formula's ``<f>`` element; it does not
+    touch the formula itself, add a cell, or change any other part of
+    the file.
+    """
+    if not entries:
+        return
+
+    by_sheet: Dict[str, List[Tuple[str, float]]] = {}
+    for sheet_title, coordinate, value in entries:
+        by_sheet.setdefault(sheet_title, []).append((coordinate, value))
+
+    with zipfile.ZipFile(path, "r") as zin:
+        workbook_xml = zin.read("xl/workbook.xml").decode("utf-8")
+        rels_xml = zin.read("xl/_rels/workbook.xml.rels").decode("utf-8")
+        original_items = {item.filename: zin.read(item.filename) for item in zin.infolist()}
+        infolist = zin.infolist()
+
+    # sheet title -> r:id (from <sheet name="..." r:id="..."/> in workbook.xml),
+    # attributes extracted independently for the same reason as rid_to_target
+    # below.
+    title_to_rid: Dict[str, str] = {}
+    for sheet_tag in re.findall(r"<sheet\b[^>]*/>", workbook_xml):
+        name_match = re.search(r'\bname="([^"]*)"', sheet_tag)
+        rid_match = re.search(r'\br:id="([^"]*)"', sheet_tag)
+        if name_match and rid_match:
+            title_to_rid[name_match.group(1)] = rid_match.group(1)
+    # r:id -> zip-internal worksheet path (from workbook.xml.rels). Each
+    # <Relationship .../> tag's Id and Target attributes are extracted
+    # independently rather than assuming a fixed attribute order, since
+    # relying on textual order (Target-before-Id vs Id-before-Target)
+    # is exactly what silently broke this the first time.
+    rid_to_target: Dict[str, str] = {}
+    for rel_tag in re.findall(r"<Relationship\b[^>]*/>", rels_xml):
+        rel_id_match = re.search(r'\bId="([^"]*)"', rel_tag)
+        target_match = re.search(r'\bTarget="([^"]*)"', rel_tag)
+        if rel_id_match and target_match:
+            rid_to_target[rel_id_match.group(1)] = target_match.group(1)
+
+    def _resolve_sheet_path(sheet_title: str) -> Optional[str]:
+        rid = title_to_rid.get(sheet_title.replace("&", "&amp;"))
+        target = rid_to_target.get(rid) if rid else None
+        if not target:
+            return None
+        target = target.lstrip("/")
+        return target if target.startswith("xl/") else f"xl/{target}"
+
+    modified_items = dict(original_items)
+    for sheet_title, cell_entries in by_sheet.items():
+        sheet_path = _resolve_sheet_path(sheet_title)
+        if sheet_path is None or sheet_path not in modified_items:
+            continue  # defensive: never fail the whole save over a cosmetic patch
+        xml_text = modified_items[sheet_path].decode("utf-8")
+        for coordinate, value in cell_entries:
+            xml_text = _patch_cell_cached_value(xml_text, coordinate, value)
+        modified_items[sheet_path] = xml_text.encode("utf-8")
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in infolist:
+            zout.writestr(item, modified_items[item.filename])
+
+
+def _patch_cell_cached_value(xml_text: str, coordinate: str, value: float) -> str:
+    """Fill in the (already-present but empty) ``<v>`` element for one
+    formula cell -- e.g. turning ``<c r="C35" ...><f>SUM(C6:C33)</f><v></v></c>``
+    into the same cell with ``<v>123.45</v>``. Does nothing (rather than
+    raising) if that exact cell isn't found, since this is a cosmetic
+    "show the number immediately" patch layered on top of an already
+    fully-correct workbook -- it must never be able to turn a successful
+    generation into a failed one.
+    """
+    anchor = f'r="{coordinate}"'
+    cell_start = xml_text.find(anchor)
+    if cell_start == -1:
+        return xml_text
+    cell_end = xml_text.find("</c>", cell_start)
+    next_cell = xml_text.find("<c ", cell_start + len(anchor))
+    if cell_end == -1 or (next_cell != -1 and next_cell < cell_end):
+        return xml_text  # malformed/unexpected shape -- leave untouched
+
+    cell_xml = xml_text[cell_start:cell_end]
+    formatted = _format_cached_number(value)
+    if "<v>" in cell_xml or "<v/>" in cell_xml:
+        patched_cell = re.sub(r"<v\s*/?>(?:</v>)?", f"<v>{formatted}</v>", cell_xml, count=1)
+    else:
+        patched_cell = cell_xml + f"<v>{formatted}</v>"
+    return xml_text[:cell_start] + patched_cell + xml_text[cell_end:]
+
+
 class SummaryWriter:
     def __init__(self, target_year: int, prior_years: List[int], years_with_margin: List[int]):
         self.target_year = target_year
         self.prior_years = sorted(prior_years)
         self.years_with_margin = set(years_with_margin)
         self._plan_columns()
+        # (sheet_title, cell_coordinate, cached_value) for every live
+        # formula cell written by this instance -- see
+        # `patch_cached_formula_values`.
+        self._formula_cache: List[Tuple[str, str, float]] = []
 
     # ------------------------------------------------------------------
     def _plan_columns(self) -> None:
@@ -118,6 +282,23 @@ class SummaryWriter:
         )
 
     # ------------------------------------------------------------------
+    def patch_cached_formula_values(self, path) -> None:
+        """Call this once, right after ``wb.save(path)`` (see
+        ``main.py``/``gui/runner.py``), to fill in a cached numeric
+        result for every live formula this writer wrote (Worksheet 1's
+        per-group Total/Margin and every subtotal row, plus Worksheet
+        2's equivalents). openpyxl never writes a cached result for a
+        formula cell -- Excel itself normally fills that in the first
+        time a human opens the file, recalculates, and saves it again.
+        Until then, some viewers (Excel's Protected View, preview
+        panes, and other lightweight renderers that show a cell's
+        last-saved value without running a calculation engine) show
+        those cells blank, which is exactly the "totals only appear
+        after I click into the cell" symptom this fixes. The formulas
+        themselves are completely untouched.
+        """
+        _inject_cached_formula_values(path, self._formula_cache)
+
     def build(
         self,
         sections: List[Tuple[config.OutputSection, List[GroupSummary]]],
@@ -261,6 +442,20 @@ class SummaryWriter:
                     "solid", fgColor=config.TOTAL_MARGIN_HEADER_FILL
                 )
 
+    def _write_sum_formula(self, ws: Worksheet, row: int, column: int, formula: str):
+        """Write one ``=SUM(...)`` formula cell and record the number it
+        will evaluate to (computed by reading the sibling cells it
+        references, already written by the time this runs) so
+        ``patch_cached_formula_values`` can give it a cached result
+        after the workbook is saved. Every formula this module writes
+        goes through this one helper -- see its module-level docstring
+        note on formulas for why a formula (not a value) is used here at
+        all; this only changes how it additionally gets a cached result.
+        """
+        cell = ws.cell(row=row, column=column, value=formula)
+        self._formula_cache.append((ws.title, cell.coordinate, _sum_formula_cached_value(ws, formula)))
+        return cell
+
     def _write_banner_row(self, ws: Worksheet, row: int, text: str, fill: Optional[str] = None) -> None:
         self._content_rows.append(row)
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=self.last_col)
@@ -305,11 +500,7 @@ class SummaryWriter:
         # reference rather than a contiguous range -- a mechanical
         # adjustment to match the new layout, not a methodology change;
         # the value is identical to summing Q1..Q4 revenue as before.
-        ws.cell(
-            row=row,
-            column=self.col_current_total,
-            value=f"=SUM({','.join(total_col_refs)})",
-        )
+        self._write_sum_formula(ws, row, self.col_current_total, f"=SUM({','.join(total_col_refs)})")
         # Final yearly Margin: now also a live formula, summing the same
         # four quarter Margin cells already written above -- mirroring
         # the Total column exactly. This produces the identical number
@@ -318,17 +509,19 @@ class SummaryWriter:
         # yearly-margin identity is already covered by
         # tests/compare_with_manual.py), so no calculation changes --
         # only how the value is expressed on the sheet.
-        ws.cell(
-            row=row,
-            column=self.col_current_margin,
-            value=f"=SUM({','.join(margin_col_refs)})",
-        )
+        self._write_sum_formula(ws, row, self.col_current_margin, f"=SUM({','.join(margin_col_refs)})")
         ws.cell(row=row, column=self.col_current_total).fill = total_fill
         ws.cell(row=row, column=self.col_current_margin).fill = margin_fill
 
         if group.comment:  # Rule 6: comment blanks stay blank
             c = ws.cell(row=row, column=self.col_comments, value=group.comment)
-            c.alignment = Alignment(wrap_text=True, vertical="top")
+            # `wrap_text` deliberately left off here, matching the
+            # manually-built template's own Comments-column cells
+            # (verified: `vertical="top"` only, `wrapText` unset) --
+            # turning it on is what makes Excel auto-expand a row's
+            # height to fit a long comment, so a row's height would
+            # vary with comment length instead of staying uniform.
+            c.alignment = Alignment(vertical="top")
 
     def _write_subtotal_row(self, ws: Worksheet, row: int, label: str, data_start: int, data_end: int) -> None:
         self._content_rows.append(row)
@@ -336,7 +529,7 @@ class SummaryWriter:
         cell.font = Font(name=config.FONT_NAME, size=config.FONT_SIZE, bold=True)
         for col in self.numeric_cols:
             letter = get_column_letter(col)
-            formula_cell = ws.cell(row=row, column=col, value=f"=SUM({letter}{data_start}:{letter}{data_end})")
+            formula_cell = self._write_sum_formula(ws, row, col, f"=SUM({letter}{data_start}:{letter}{data_end})")
             formula_cell.font = Font(name=config.FONT_NAME, size=config.FONT_SIZE, bold=True)
         for col in range(1, self.last_col + 1):
             ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor=config.SUBTOTAL_FILL)
@@ -528,22 +721,20 @@ class SummaryWriter:
 
                 # Total: live formula over this row's own monthly value
                 # cells (mirrors Worksheet 1's Total-formula convention).
-                ws2.cell(
-                    row=current_row,
-                    column=col_total,
-                    value=f"=SUM({','.join(value_refs)})" if value_refs else 0,
-                )
+                if value_refs:
+                    self._write_sum_formula(ws2, current_row, col_total, f"=SUM({','.join(value_refs)})")
+                else:
+                    ws2.cell(row=current_row, column=col_total, value=0)
                 # Margin: also a live formula now, summing this row's own
                 # monthly Margin cells written just above -- mirroring
                 # the Total column exactly. Produces the identical
                 # number `g.total_margin` already holds (both are sums
                 # of the same underlying monthly margin figures), so no
                 # calculation changes -- only how the value is expressed.
-                ws2.cell(
-                    row=current_row,
-                    column=col_margin,
-                    value=f"=SUM({','.join(margin_refs)})" if margin_refs else 0,
-                )
+                if margin_refs:
+                    self._write_sum_formula(ws2, current_row, col_margin, f"=SUM({','.join(margin_refs)})")
+                else:
+                    ws2.cell(row=current_row, column=col_margin, value=0)
                 ws2.cell(row=current_row, column=col_total).fill = total_fill
                 ws2.cell(row=current_row, column=col_margin).fill = margin_fill
 
@@ -551,7 +742,10 @@ class SummaryWriter:
                     ws2.cell(row=current_row, column=col_confidence, value=g.confidence)
                 if g.comment:
                     c = ws2.cell(row=current_row, column=col_comments, value=g.comment)
-                    c.alignment = Alignment(wrap_text=True, vertical="top")
+                    # Same reasoning as Worksheet 1's comment cells: no
+                    # `wrap_text`, matching the template, so row height
+                    # doesn't vary with comment length.
+                    c.alignment = Alignment(vertical="top")
                 current_row += 1
             data_end = current_row - 1
 
@@ -562,9 +756,8 @@ class SummaryWriter:
                 cell.font = Font(name=config.FONT_NAME, size=config.FONT_SIZE, bold=True)
                 for col in numeric_cols:
                     letter = get_column_letter(col)
-                    fcell = ws2.cell(
-                        row=current_row, column=col,
-                        value=f"=SUM({letter}{data_start}:{letter}{data_end})",
+                    fcell = self._write_sum_formula(
+                        ws2, current_row, col, f"=SUM({letter}{data_start}:{letter}{data_end})",
                     )
                     fcell.font = Font(name=config.FONT_NAME, size=config.FONT_SIZE, bold=True)
                 for col in range(1, last_col + 1):

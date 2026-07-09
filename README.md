@@ -1229,3 +1229,34 @@ to make silently:**
 - Dynamic naming re-verified for a second target year (2025): sheet is
   named "2025 Actual & Forecast" with no code change, confirming no year
   is hardcoded anywhere in the new code.
+
+---
+
+## 14. Phase 2: AI-powered Business Intelligence platform (`ai/`)
+
+A new top-level package, `ai/`, adds an AI assistant on top of this
+project's reporting engine -- entirely additive, per the same standard
+the rest of this README documents for every other feature: no existing
+calculation, parsing, aggregation, or Excel-generation code changed.
+
+See `ai/README.md` for what's implemented so far (Phase 2a foundation:
+settings, the Bedrock provider abstraction, the business data context,
+the DataFrame query layer, the filter engine, and the service facade;
+Phase 2b: the nine-node workflow graph, the plugin tool architecture
+with five analysis tools, the Analytics Engine, conversation state, and
+a working "AI Assistant" page reachable from the sidebar) and
+`Phase2_AI_Assistant_Architecture_Plan_v3.md` for the complete, approved
+architecture this package is being built against, phase by phase.
+
+Two Phase 1 files are touched, both narrowly: `gui/runner.py` gains six
+new, optional fields on `GenerationResult`, populated from values
+`generate_summary()` already computes (Phase 2a); `app.py` gains one new
+navigation branch plus a one-line guard on its pre-existing
+`_resolve_upload_state()` function, fixing a latent defect (confirmed
+pre-existing and reproducible on the untouched "Settings" page too)
+where navigating to any other page was misread as the user removing
+their uploaded file, silently clearing the generated Summary. Full
+details, including the before/after verification, are in `ai/README.md`.
+All four regression tests listed in §7 above continue to pass unmodified
+after every change in both phases.
+

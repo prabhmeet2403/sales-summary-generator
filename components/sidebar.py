@@ -18,6 +18,7 @@ import streamlit as st
 _NAV = [
     # (session_key, label, group_label_shown_before_this_item)
     ("upload", "Upload & Generate", None),
+    ("ai", "Chatbot Prabh", None),
     ("settings", "Settings", "System"),
     ("about", "About", None),
 ]

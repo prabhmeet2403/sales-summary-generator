@@ -96,14 +96,20 @@ def build_monthly_sections(
     ws_main: Worksheet,
     section_results: List[Tuple["config.OutputSection", List[GroupSummary]]],
 ) -> List[Tuple["config.OutputSection", List[MonthlyGroupSummary]]]:
-    """For every section/group already produced for Worksheet 1, compute
-    that same group's month-by-month revenue and margin.
+    """For every section/group in `section_results`, compute that same
+    group's month-by-month revenue and margin.
 
     The set of groups, their order, their POC, and their comment are all
-    taken as-is from `section_results` (Worksheet 1's already-validated
-    output) -- this function only adds the monthly breakdown on top of
-    groups that already exist; it never adds, removes, or reorders a
-    group relative to Worksheet 1.
+    taken as-is from `section_results` -- this function only adds the
+    monthly breakdown on top of groups that already exist; it never
+    adds, removes, or reorders a group relative to whatever it's given.
+
+    Callers pass this Worksheet 1's own `section_results` plus (per
+    `config.WORKSHEET2_ADDITIONAL_SECTIONS`) any sections that belong
+    only on Worksheet 2 -- see `main.py`/`gui/runner.py`'s
+    `worksheet2_extra_section_results`. This function itself has no
+    opinion on which sections came from where; it just computes a
+    monthly breakdown for whatever section/group pairs it's handed.
     """
     # Group every row by normalised name ONCE, so every group below is a
     # simple dict lookup instead of a fresh linear scan each time.

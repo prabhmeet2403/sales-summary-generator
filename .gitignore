@@ -1,14 +1,21 @@
-__pycache__/
-*.pyc
-.venv/
-venv/
-
-output/
-logs/
-input/
-
+ # Secrets -- never commit real credentials.
 .env
 
-.DS_Store
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
 
-.streamlit/secrets.toml
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Generated output (kept local; not part of the source tree)
+output/*.xlsx
+logs/*.log
+logs/*.txt
+
+input/*
+!input/.gitkeep

@@ -24,7 +24,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -33,6 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import config  # noqa: E402
 from excel_reader import (  # noqa: E402
     MasterWorkbook,
+    ProjectRow,
     SheetNotFoundError,
     ColumnNotFoundError,
     build_column_map,
@@ -41,12 +42,13 @@ from excel_reader import (  # noqa: E402
 from comment_mapper import CommentMapper  # noqa: E402
 from historical_lookup import HistoricalLookup  # noqa: E402
 from aggregator import (  # noqa: E402
+    GroupSummary,
     aggregate_section,
     sort_groups,
     attach_comments,
     attach_historical,
 )
-from monthly_view import build_monthly_sections, resolve_month_roles  # noqa: E402
+from monthly_view import MonthlyGroupSummary, build_monthly_sections, resolve_month_roles  # noqa: E402
 from summary_writer import SummaryWriter  # noqa: E402
 from validator import ValidationReport  # noqa: E402
 
@@ -60,7 +62,15 @@ def _noop(_message: str) -> None:
 @dataclass
 class GenerationResult:
     """Everything the GUI needs to render a result screen, success or
-    failure, without re-parsing text output."""
+    failure, without re-parsing text output.
+
+    Phase 2 fields (``section_results`` through ``prior_years`` below)
+    are additive: they carry the exact same already-computed objects
+    ``generate_summary`` builds for the CLI/GUI/Streamlit success path,
+    so the Phase 2 AI layer (``ai.context.BusinessContext``) can consume
+    them without re-parsing the source workbook or recomputing any
+    business value. They are ``None`` on any unsuccessful generation.
+    """
 
     success: bool
     report: Optional[ValidationReport] = None
@@ -70,6 +80,15 @@ class GenerationResult:
     error_message: str = ""
     error_details: str = ""
     available_years: List[int] = field(default_factory=list)
+    # --- Phase 2 additions -------------------------------------------
+    # See ai/context.py's BusinessContext.from_generation_result, the
+    # sole consumer of these fields.
+    section_results: Optional[List[Tuple[config.OutputSection, List[GroupSummary]]]] = None
+    monthly_section_results: Optional[List[Tuple[config.OutputSection, List[MonthlyGroupSummary]]]] = None
+    rows: Optional[List[ProjectRow]] = None
+    month_roles: Optional[Dict[int, str]] = None
+    target_year: Optional[int] = None
+    prior_years: Optional[List[int]] = None
 
 
 class GenerationError(Exception):
@@ -194,9 +213,17 @@ def generate_summary(
                     show_poc=True,
                 )
             ]
+            # No Sub-Group column at all in this fallback -- every code
+            # already lands in the single synthetic "all" section above,
+            # so there is nothing left for the Worksheet-2-only
+            # Projection sections to add.
+            worksheet2_extra_sections_config: list = []
         else:
             sections_config = config.OUTPUT_SECTIONS
-            configured_codes = {c for s in sections_config for c in s.ds_codes}
+            worksheet2_extra_sections_config = config.WORKSHEET2_ADDITIONAL_SECTIONS
+            configured_codes = {
+                c for s in (sections_config + worksheet2_extra_sections_config) for c in s.ds_codes
+            }
             unmapped = Counter(
                 r.sub_group_raw for r in rows
                 if r.ds_code is not None and r.ds_code not in configured_codes
@@ -237,17 +264,46 @@ def generate_summary(
             attach_historical(groups, historical, prior_years, years_with_margin, section.ds_codes, stats)
             section_results.append((section, groups))
 
+        # Same aggregation mechanism as above, for the two Projection
+        # sections that belong ONLY on Worksheet 2 -- see
+        # config.WORKSHEET2_ADDITIONAL_SECTIONS. Kept out of
+        # `section_results` (and therefore out of Worksheet 1) entirely;
+        # combined with it only when building Worksheet 2's monthly view
+        # below.
+        worksheet2_extra_section_results = []
+        for section in worksheet2_extra_sections_config:
+            progress(f"Aggregating section: {section.title}…")
+            stats = report.new_section(section.title)
+            groups = aggregate_section(rows, section, stats)
+            groups = sort_groups(groups, sort_alphabetically=section.sort_alphabetically)
+            attach_comments(groups, comment_mapper, stats)
+            attach_historical(groups, historical, prior_years, years_with_margin, section.ds_codes, stats)
+            worksheet2_extra_section_results.append((section, groups))
+
         progress("Building the Summary workbook…")
         writer = SummaryWriter(target_year, prior_years, years_with_margin)
         month_roles = resolve_month_roles(ws_main, cmap)
-        monthly_section_results = build_monthly_sections(rows, cmap, ws_main, section_results)
-        wb = writer.build(section_results, monthly_section_results, month_roles)
+        # Worksheet 2 gets the combined (Worksheet 1 + Projection) monthly
+        # view. `monthly_section_results` -- what gets attached to
+        # GenerationResult below, and from there is the only thing the
+        # AI layer (ai/context.py) ever reads -- stays sliced to exactly
+        # Worksheet 1's own sections, so the AI's view of the data is
+        # completely unaffected by Worksheet 2's Projection sections
+        # (same rows, same order, same objects; slicing rather than a
+        # second `build_monthly_sections` call avoids computing anything
+        # twice).
+        worksheet2_monthly_section_results = build_monthly_sections(
+            rows, cmap, ws_main, section_results + worksheet2_extra_section_results,
+        )
+        monthly_section_results = worksheet2_monthly_section_results[:len(section_results)]
+        wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles)
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir_obj / output_filename
         progress(f"Saving workbook to {output_path.name}…")
         try:
             wb.save(output_path)
+            writer.patch_cached_formula_values(output_path)
         except PermissionError as exc:
             raise GenerationError(
                 "Cannot Save Workbook",
@@ -268,6 +324,12 @@ def generate_summary(
             output_path=output_path,
             report_path=report_path,
             available_years=available_years,
+            section_results=section_results,
+            monthly_section_results=monthly_section_results,
+            rows=rows,
+            month_roles=month_roles,
+            target_year=target_year,
+            prior_years=prior_years,
         )
 
     except GenerationError as exc:

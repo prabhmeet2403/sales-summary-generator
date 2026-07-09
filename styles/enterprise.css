@@ -619,3 +619,170 @@ label[data-testid="stWidgetLabel"] {
   border-color: var(--accent) !important;
 }
 [data-testid="stCaptionContainer"] { font-family: var(--font) !important; font-size: 12px !important; }
+
+
+/* --- Floating Chatbot Prabh widget (ai/ui/floating_widget.py) --- */
+.st-key-floating_assistant_toggle_btn {
+  position: fixed; bottom: 28px; right: 28px; z-index: 10000; width: auto;
+}
+/* Safety net: force-hide the toggle button (including its nested
+   tooltip-icon wrapper, which Streamlit does not always clear from a
+   st.empty() placeholder on the same run the panel opens) whenever the
+   panel is present in the DOM. Belt-and-suspenders alongside the
+   Python-side conditional rendering in floating_widget.py. */
+body:has(.st-key-floating_assistant_panel) .st-key-floating_assistant_toggle_btn {
+  display: none !important;
+}
+.st-key-floating_assistant_toggle_btn button {
+  border-radius: 50%; width: 60px; height: 60px; padding: 0; font-size: 24px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-h));
+  color: #fff; border: none; line-height: 1;
+  box-shadow: 0 6px 20px rgba(0, 87, 184, 0.35);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.st-key-floating_assistant_toggle_btn button:hover {
+  transform: scale(1.08);
+  box-shadow: 0 8px 26px rgba(0, 87, 184, 0.45);
+}
+.st-key-floating_assistant_toggle_btn button:active { transform: scale(0.96); }
+
+.st-key-floating_assistant_panel {
+  position: fixed; top: 74px; right: 16px; z-index: 9999;
+  width: 540px; max-width: 92vw; height: calc(100vh - 90px);
+  display: flex; flex-direction: column; overflow-y: auto;
+  scroll-behavior: smooth; scrollbar-width: thin; scrollbar-color: #CBD5E1 transparent;
+  background: #fff; border: 1px solid #E5E9F0; border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.16);
+  padding: 0 20px 16px 20px;
+  animation: copilotSlideIn 0.25s ease-out;
+}
+@media (max-width: 1440px) { .st-key-floating_assistant_panel { width: 460px; } }
+@media (max-width: 900px)  { .st-key-floating_assistant_panel { width: 92vw; right: 4vw; } }
+
+.st-key-floating_assistant_panel::-webkit-scrollbar { width: 6px; }
+.st-key-floating_assistant_panel::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+
+@keyframes copilotSlideIn {
+  from { transform: translateX(16px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* Header row: title/subtitle + close button, sticky at the panel's top */
+.st-key-floating_assistant_panel > div > div[data-testid="stHorizontalBlock"]:first-of-type {
+  position: sticky; top: 0; background: #fff; z-index: 2;
+  padding: 18px 0 12px 0; border-bottom: 1px solid #EEF2F7; margin-bottom: 6px;
+}
+.copilot-title { font-weight: 700; font-size: 16px; color: #1E293B; }
+.copilot-subtitle { font-size: 12.5px; color: #64748B; margin-top: 2px; line-height: 1.4; }
+.st-key-floating_assistant_close_btn {
+  /* The header row above is `position: sticky`, but its "stuck" range
+     is limited to its own immediate wrapper's box in Streamlit's
+     generated nesting -- once the panel's content is tall enough,
+     that wrapper is shorter than the scrollable area and the header
+     (including this close button) scrolls out of view anyway. Pinning
+     the close button itself to the viewport, independent of the
+     panel's inner scroll position, is what actually keeps it
+     reachable at any scroll depth (verified against real overflow in
+     a live browser) -- the same "always-visible close control"
+     pattern Copilot/ChatGPT-style panels use. */
+  position: fixed !important;
+  top: 90px; right: 36px; z-index: 10001;
+}
+.st-key-floating_assistant_close_btn button {
+  border: none; background: transparent; color: #64748B; font-size: 16px;
+  border-radius: 6px; transition: background 0.15s ease, color 0.15s ease;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+}
+.st-key-floating_assistant_close_btn button:hover { background: #F1F5F9; color: #1E293B; }
+@media (max-width: 900px) { .st-key-floating_assistant_close_btn { right: calc(4vw + 20px); } }
+
+/* Empty / welcome state */
+.copilot-empty { text-align: center; padding: 20px 6px 10px 6px; color: #475569; }
+.copilot-empty-emoji { font-size: 32px; margin-bottom: 6px; }
+.copilot-empty-title { font-weight: 700; font-size: 17px; color: #1E293B; margin-bottom: 6px; }
+.copilot-empty p { font-size: 13.5px; line-height: 1.5; margin: 4px 0; }
+.copilot-capabilities {
+  list-style: none; display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 6px 8px; padding: 6px 0 0 0; margin: 6px 0 0 0;
+}
+.copilot-capabilities li {
+  background: #F1F5F9; color: #334155; font-size: 12px; font-weight: 500;
+  padding: 4px 10px; border-radius: 999px;
+}
+
+/* Suggestion chips (rendered as st.button, use_container_width) */
+.st-key-floating_assistant_panel [data-testid="stColumn"] button {
+  border-radius: 10px; border: 1px solid #E2E8F0; background: #F8FAFC;
+  color: #334155; font-size: 12.5px; font-weight: 500; padding: 10px 8px;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+.st-key-floating_assistant_panel [data-testid="stColumn"] button:hover {
+  border-color: var(--accent); background: #EEF4FC; color: var(--accent);
+  transform: translateY(-1px);
+}
+
+/* Quick-action / follow-up suggestion groups: reuses .section-label's
+   existing typography, just with tighter vertical rhythm suited to a
+   narrow panel with several stacked groups. */
+.st-key-floating_assistant_panel .section-label { margin: 16px 0 8px; }
+
+/* Quick-action / follow-up suggestion chips: matches by key substring
+   (Streamlit sets the class to "st-key-<key>", and these containers
+   are keyed "..._quick_actions" / "..._followups" with a varying
+   prefix -- welcome vs. per-turn follow-up counts -- so a substring
+   match is what actually stays correct as that count changes, rather
+   than an exact key that only matches one specific count). Applies to
+   both the full "AI Assistant" page and the floating panel.
+
+   flex-wrap lets a row of buttons wrap onto additional lines once
+   they no longer fit at a readable width, instead of being forced
+   into equally-narrow columns that wrap text mid-word -- this is what
+   actually keeps a 5-item row (e.g. Executive Summary's quick actions)
+   legible in the narrow floating panel while still fitting on one row
+   in the full page's much wider content area, with no per-surface
+   Python layout logic needed. */
+[class*="st-key-"][class*="_quick_actions"] [data-testid="stHorizontalBlock"],
+[class*="st-key-"][class*="_followups"] [data-testid="stHorizontalBlock"] {
+  flex-wrap: wrap !important;
+  row-gap: 10px;
+}
+[class*="st-key-"][class*="_quick_actions"] [data-testid="stColumn"],
+[class*="st-key-"][class*="_followups"] [data-testid="stColumn"] {
+  flex: 1 1 150px !important;
+  width: auto !important;
+  min-width: 150px;
+}
+[class*="st-key-"][class*="_quick_actions"] [data-testid="stColumn"] button,
+[class*="st-key-"][class*="_followups"] [data-testid="stColumn"] button {
+  border-radius: 10px; border: 1px solid #E2E8F0; background: #F8FAFC;
+  color: #334155; font-size: 12.5px; font-weight: 500; padding: 10px 8px;
+}
+[class*="st-key-"][class*="_quick_actions"] [data-testid="stColumn"] button:hover,
+[class*="st-key-"][class*="_followups"] [data-testid="stColumn"] button:hover {
+  border-color: var(--accent); background: #EEF4FC; color: var(--accent);
+}
+
+/* Chat message bubbles, scoped to this panel only */
+.st-key-floating_assistant_panel [data-testid="stChatMessage"] {
+  padding: 8px 0; font-size: 13.5px; line-height: 1.55;
+}
+
+/* Not-configured card */
+.copilot-config-card {
+  background: #FFFBEB; border: 1px solid #FDE68A; border-radius: 10px;
+  padding: 16px 18px; margin: 12px 0; color: #78350F;
+}
+.copilot-config-icon { font-size: 20px; }
+.copilot-config-title { font-weight: 700; font-size: 14.5px; margin: 4px 0 8px 0; color: #92400E; }
+.copilot-config-card p { font-size: 13px; line-height: 1.5; margin: 4px 0; }
+.copilot-config-card ol { margin: 6px 0; padding-left: 20px; font-size: 13px; }
+.copilot-config-doclink {
+  display: inline-block; margin-top: 8px; font-size: 12.5px; font-weight: 600;
+  color: var(--accent); text-decoration: underline; cursor: default;
+}
+
+/* Compact inline error, replaces a full-width st.error banner */
+.copilot-error {
+  background: #FEF2F2; border: 1px solid #FECACA; color: #B91C1C;
+  border-radius: 8px; padding: 10px 14px; font-size: 13px; line-height: 1.5;
+}

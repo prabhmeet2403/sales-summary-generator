@@ -9,3 +9,17 @@ pyinstaller>=6.0.0
 
 # --- Streamlit web app (app.py) ---
 streamlit>=1.35.0,<2.0.0
+
+# --- Phase 2: AI Assistant platform (ai/) ---
+# boto3: Amazon Bedrock client (ai/llm/providers/bedrock.py)
+#   >=1.40.0 for Bedrock bearer-token authentication support
+#   (AWS_BEARER_TOKEN_BEDROCK, via botocore's generic bearer-token
+#   credential resolution). Confirmed present in 1.43.41.
+# pandas: the DataFrame query layer (ai/data/frames.py, ai/data/filters.py)
+# python-dotenv: loads .env into the environment on startup (app.py),
+#   for local development convenience only -- a real deployment sets
+#   these as actual environment variables and does not need a .env file.
+boto3>=1.40.0
+pandas>=2.1.0
+python-dotenv>=1.0.0
+

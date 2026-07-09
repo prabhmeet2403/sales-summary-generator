@@ -154,9 +154,17 @@ def main(argv=None) -> int:
                     show_poc=True,
                 )
             ]
+            # No Sub-Group column at all in this fallback -- every code
+            # already lands in the single synthetic "all" section above,
+            # so there is nothing left for the Worksheet-2-only
+            # Projection sections to add.
+            worksheet2_extra_sections_config: list = []
         else:
             sections_config = config.OUTPUT_SECTIONS
-            configured_codes = {c for s in sections_config for c in s.ds_codes}
+            worksheet2_extra_sections_config = config.WORKSHEET2_ADDITIONAL_SECTIONS
+            configured_codes = {
+                c for s in (sections_config + worksheet2_extra_sections_config) for c in s.ds_codes
+            }
             unmapped = Counter(
                 r.sub_group_raw for r in rows
                 if r.ds_code is not None and r.ds_code not in configured_codes
@@ -194,14 +202,42 @@ def main(argv=None) -> int:
             attach_historical(groups, historical, prior_years, years_with_margin, section.ds_codes, stats)
             section_results.append((section, groups))
 
+        # Same aggregation mechanism as above, for the two Projection
+        # sections that belong ONLY on Worksheet 2 -- see
+        # config.WORKSHEET2_ADDITIONAL_SECTIONS. Kept out of
+        # `section_results` (and therefore out of Worksheet 1) entirely;
+        # combined with it only when building Worksheet 2's monthly view
+        # below.
+        worksheet2_extra_section_results = []
+        for section in worksheet2_extra_sections_config:
+            stats = report.new_section(section.title)
+            groups = aggregate_section(rows, section, stats)
+            groups = sort_groups(groups, sort_alphabetically=section.sort_alphabetically)
+            attach_comments(groups, comment_mapper, stats)
+            attach_historical(groups, historical, prior_years, years_with_margin, section.ds_codes, stats)
+            worksheet2_extra_section_results.append((section, groups))
+
         writer = SummaryWriter(target_year, prior_years, years_with_margin)
         month_roles = resolve_month_roles(ws_main, cmap)
-        monthly_section_results = build_monthly_sections(rows, cmap, ws_main, section_results)
-        wb = writer.build(section_results, monthly_section_results, month_roles)
+        # Worksheet 2 gets the combined (Worksheet 1 + Projection) monthly
+        # view. `monthly_section_results` -- what gets attached to
+        # GenerationResult below, and from there is the only thing the
+        # AI layer (ai/context.py) ever reads -- stays sliced to exactly
+        # Worksheet 1's own sections, so the AI's view of the data is
+        # completely unaffected by Worksheet 2's Projection sections
+        # (same rows, same order, same objects; slicing rather than a
+        # second `build_monthly_sections` call avoids computing anything
+        # twice).
+        worksheet2_monthly_section_results = build_monthly_sections(
+            rows, cmap, ws_main, section_results + worksheet2_extra_section_results,
+        )
+        monthly_section_results = worksheet2_monthly_section_results[:len(section_results)]
+        wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles)
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir / output_filename
         wb.save(output_path)
+        writer.patch_cached_formula_values(output_path)
         report.output_file = str(output_path)
         report.success = True
         logger.info("Summary workbook written to %s", output_path)

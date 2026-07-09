@@ -139,7 +139,61 @@ OUTPUT_SECTIONS: List[OutputSection] = [
         sort_alphabetically=False,
         blank_rows_after_title=1,     # one blank row before the first data row
         blank_rows_after_data=2,      # TWO blank rows before the subtotal (matches sample)
-        blank_rows_after_subtotal=0,  # last section on the sheet
+        blank_rows_after_subtotal=0,  # last section on Worksheet 1
+    ),
+]
+
+# The master workbook's "Sales by Customer- <year>" sheet also carries two
+# Projection (forecast, not-yet-secured) blocks -- "Track 1 (Projection)"
+# (Sub-Group DS30_Projection) and "Track 2 (Projection)" (Sub-Group
+# DS50_Projection) -- sitting after "TOTAL Secured" and before "TOTAL
+# Projection" in the source sheet.
+#
+# These are deliberately kept OUT of `OUTPUT_SECTIONS` above -- per an
+# explicit, confirmed business rule, the Projection blocks belong ONLY on
+# the "<year> Actual & Forecast" worksheet (Worksheet 2), not on the
+# yearly "<year>" summary (Worksheet 1). `main.py`/`gui/runner.py`
+# aggregate this list with the exact same `aggregate_section` mechanism
+# `OUTPUT_SECTIONS` uses, then combine the two sets of results only when
+# building Worksheet 2's monthly view -- Worksheet 1 is built from
+# `OUTPUT_SECTIONS` alone and never sees these two sections. Without this
+# list at all, DS30_Projection/DS50_Projection match no section anywhere
+# and every one of those rows is silently dropped (surfaced only in the
+# validation report's "Unmapped Sub-Groups" list).
+#
+# The source sheet gives neither block its own individual subtotal row
+# (only a combined "TOTAL Projection" spanning both, which the existing
+# "TOTAL Secured"/"Solutions and Staff Augmentation Total" grand-total
+# rows above are likewise never reproduced for either Track 1 or Track 2
+# on Worksheet 1), so `subtotal_label` below extends the same
+# "Subtotal : <title>" convention `OUTPUT_SECTIONS` already uses rather
+# than copying source text verbatim. `show_poc=False` mirrors
+# "projects_track1" above, the closest structural analog (individual
+# named engagements under a "Track N" label).
+WORKSHEET2_ADDITIONAL_SECTIONS: List[OutputSection] = [
+    OutputSection(
+        key="projects_track1_projection",
+        heading=None,
+        title="Track 1 (Projection)",
+        subtotal_label="Subtotal : Track 1 (Projection)",
+        ds_codes=[30],
+        show_poc=False,
+        sort_alphabetically=True,
+        blank_rows_after_title=0,
+        blank_rows_after_data=1,
+        blank_rows_after_subtotal=1,
+    ),
+    OutputSection(
+        key="projects_track2_projection",
+        heading=None,
+        title="Track 2 (Projection)",
+        subtotal_label="Subtotal : Track 2 (Projection)",
+        ds_codes=[50],
+        show_poc=False,
+        sort_alphabetically=True,
+        blank_rows_after_title=0,
+        blank_rows_after_data=1,
+        blank_rows_after_subtotal=0,  # last section on Worksheet 2
     ),
 ]
 

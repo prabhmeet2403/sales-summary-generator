@@ -68,29 +68,46 @@ def main() -> int:
         else:
             ws2 = wb[expected_name]
 
-            # --- Same groups, same order, as Worksheet 1 -----------
+            # --- Worksheet 2 = Worksheet 1's own groups, same order,
+            #     PLUS the two Projection sections that belong only on
+            #     Worksheet 2 (see config.WORKSHEET2_ADDITIONAL_SECTIONS)
+            #     appended after them -- not an exact mirror of
+            #     Worksheet 1 any more, per the explicit business rule
+            #     that Projection data appears only on this sheet. -----
             ws1 = wb["2026"]
+            _non_group_titles = (
+                "Solutions and Staff Augmentation (Projects)",
+                "Solutions and Staff Augmentation (Projects) - Track 1",
+                "Staffing- Secured",
+                "Track 1 (Projection)",
+                "Track 2 (Projection)",
+            )
             ws1_names = [
                 n for n in _row_names(ws1)
-                if n not in ("Name",) and "Subtotal" not in n
-                and n not in ("Solutions and Staff Augmentation (Projects)",
-                              "Solutions and Staff Augmentation (Projects) - Track 1",
-                              "Staffing- Secured")
+                if n not in ("Name",) and "Subtotal" not in n and n not in _non_group_titles
             ]
             ws2_names = [
                 n for n in _row_names(ws2)
-                if n not in ("Name",) and "Subtotal" not in n
-                and n not in ("Solutions and Staff Augmentation (Projects)",
-                              "Solutions and Staff Augmentation (Projects) - Track 1",
-                              "Staffing- Secured")
+                if n not in ("Name",) and "Subtotal" not in n and n not in _non_group_titles
             ]
-            if ws1_names != ws2_names:
+            if ws2_names[:len(ws1_names)] != ws1_names:
                 problems.append(
-                    f"Worksheet 2's group list differs from Worksheet 1's.\n"
-                    f"  Worksheet 1: {ws1_names}\n  Worksheet 2: {ws2_names}"
+                    f"Worksheet 2 does not start with Worksheet 1's own group list, same order.\n"
+                    f"  Worksheet 1: {ws1_names}\n  Worksheet 2 (first {len(ws1_names)}): {ws2_names[:len(ws1_names)]}"
                 )
             else:
-                print(f"Worksheet 2 shows the same {len(ws2_names)} groups, same order, as Worksheet 1. PASS")
+                extra = ws2_names[len(ws1_names):]
+                print(
+                    f"Worksheet 2 shows Worksheet 1's own {len(ws1_names)} groups first, same order, "
+                    f"followed by {len(extra)} Projection-only group(s). PASS"
+                )
+
+            # --- ...and the Projection sections must NEVER appear on
+            #     Worksheet 1 itself. -----------------------------------
+            ws1_all_titles = set(_row_names(ws1))
+            leaked = ws1_all_titles & {"Track 1 (Projection)", "Track 2 (Projection)"}
+            if leaked:
+                problems.append(f"Worksheet 1 must not contain the Projection section(s): {leaked}")
 
             # --- Actual/Forecast roles were dynamically detected -----
             # (not asserting a specific split -- only that BOTH roles

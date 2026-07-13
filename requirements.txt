@@ -9,6 +9,14 @@ pyinstaller>=6.0.0
 
 # --- Streamlit web app (app.py) ---
 streamlit>=1.35.0,<2.0.0
+# streamlit-js-eval: minimal bridge to read one value back from the
+# browser (its local date/time for the download filename -- see
+# app.py's _run_generation/_render_result). Streamlit's Python backend
+# has no other way to learn the browser's timezone; this is the
+# smallest widely-used mechanism for it (a thin wrapper around
+# Streamlit's own custom-component protocol, no separate JS build step
+# required by this app).
+streamlit-js-eval>=0.1.7
 
 # --- Phase 2: AI Assistant platform (ai/) ---
 # boto3: Amazon Bedrock client (ai/llm/providers/bedrock.py)

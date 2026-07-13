@@ -36,6 +36,7 @@ from comment_mapper import CommentMapper
 from historical_lookup import HistoricalLookup
 from aggregator import aggregate_section, sort_groups, attach_comments, attach_historical
 from monthly_view import build_monthly_sections, resolve_month_roles
+from sheet_copy import copy_source_sheet_as_new_worksheet
 from summary_writer import SummaryWriter
 from validator import ValidationReport
 
@@ -233,6 +234,8 @@ def main(argv=None) -> int:
         )
         monthly_section_results = worksheet2_monthly_section_results[:len(section_results)]
         wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles)
+
+        copy_source_sheet_as_new_worksheet(wb, str(input_path), main_sheet_name, cmap.comments)
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir / output_filename

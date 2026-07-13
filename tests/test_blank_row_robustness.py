@@ -161,7 +161,15 @@ def main() -> int:
 
             baseline_wb = openpyxl.load_workbook(baseline_result.output_path, data_only=True)
             modified_wb = openpyxl.load_workbook(modified_result.output_path, data_only=True)
-            for sheet_name in baseline_wb.sheetnames:
+            # Only the two AGGREGATED sheets are in scope for this
+            # "blank row doesn't break aggregation" comparison. The
+            # third sheet ("Sales by Customer- 2026") is a deliberate
+            # verbatim copy of the source sheet -- it isn't aggregated
+            # at all, so when this test intentionally blanks a row in
+            # the SOURCE, that sheet is *supposed* to show the same
+            # blank row, exactly like the source does. Comparing it
+            # here would be asserting the opposite of what it's for.
+            for sheet_name in ("2026", "2026 Actual & Forecast"):
                 b_ws, m_ws = baseline_wb[sheet_name], modified_wb[sheet_name]
                 if b_ws.max_row != m_ws.max_row:
                     problems.append(f"[{sheet_name}] row count changed: {b_ws.max_row} vs {m_ws.max_row}")

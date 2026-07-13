@@ -49,6 +49,7 @@ from aggregator import (  # noqa: E402
     attach_historical,
 )
 from monthly_view import MonthlyGroupSummary, build_monthly_sections, resolve_month_roles  # noqa: E402
+from sheet_copy import copy_source_sheet_as_new_worksheet  # noqa: E402
 from summary_writer import SummaryWriter  # noqa: E402
 from validator import ValidationReport  # noqa: E402
 
@@ -297,6 +298,9 @@ def generate_summary(
         )
         monthly_section_results = worksheet2_monthly_section_results[:len(section_results)]
         wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles)
+
+        progress(f"Copying '{main_sheet_name}' as a third worksheet…")
+        copy_source_sheet_as_new_worksheet(wb, str(input_path_obj), main_sheet_name, cmap.comments)
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir_obj / output_filename

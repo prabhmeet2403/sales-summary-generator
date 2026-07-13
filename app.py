@@ -21,11 +21,12 @@ import os
 import shutil
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+from streamlit_js_eval import streamlit_js_eval
 
 # Loads a .env file from the project root into the process environment,
 # for local development convenience (see .env.example). Does nothing if
@@ -127,7 +128,8 @@ def _reset_for_new_upload() -> None:
         shutil.rmtree(old_tmp, ignore_errors=True)
     for key in (
         "master_path", "tmp_dir", "preview", "_base_preview", "_preview_error",
-        "gen_result", "elapsed_seconds", "generated_at", "upload_name", "year_input", "target_year",
+        "gen_result", "elapsed_seconds", "generated_at", "generation_id",
+        "generated_at_generation_id", "upload_name", "year_input", "target_year",
     ):
         st.session_state.pop(key, None)
 
@@ -324,6 +326,36 @@ def _render_upload_page() -> None:
         )
 
 
+# Evaluated in the user's own browser (via streamlit_js_eval, see
+# _render_result's Download section below) to capture THEIR local wall-
+# clock date/time, using JS Date's own local getters (getFullYear,
+# getMonth, getDate, getHours, getMinutes) -- these are inherently
+# already in whatever timezone the browser/OS is set to, India, US, or
+# anywhere else, with no timezone name/offset math needed on the
+# server. Pre-formatted here (not just raw components) so app.py only
+# has to interpolate the returned string directly into the filename --
+# it never sees or has to know the timezone in play.
+#
+# Takes `generation_id` and embeds it as an unused variable purely so
+# the EXPRESSION TEXT itself differs between generations:
+# streamlit_js_eval's own frontend only re-evaluates and reports a new
+# value back to Python when the expression text it receives differs
+# from what it last evaluated -- it does not key that decision off
+# Streamlit's `key` parameter. A fixed expression string would silently
+# keep reporting the FIRST generation's captured time forever after,
+# even under a new Python-side key.
+def _browser_local_timestamp_js(generation_id: int) -> str:
+    return (
+        "(function(){"
+        f"var _gen = {generation_id};"
+        "var d = new Date();"
+        "function pad(n){return String(n).padStart(2, '0');}"
+        "return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate())"
+        "+ '_' + pad(d.getHours()) + '-' + pad(d.getMinutes());"
+        "})()"
+    )
+
+
 def _run_generation(master_path: str, year: int) -> None:
     output_dir = os.path.join(st.session_state["tmp_dir"], "output")
     os.makedirs(output_dir, exist_ok=True)
@@ -341,13 +373,14 @@ def _run_generation(master_path: str, year: int) -> None:
         driver.fail(result.error_message or "Generation failed.")
     st.session_state["gen_result"] = result
     st.session_state["elapsed_seconds"] = elapsed
-    # Captured once, here, at the moment generation actually completes --
-    # not read again until the NEXT successful generation overwrites it.
-    # The Download button (below) reuses this stored value for the
-    # filename rather than calling datetime.now() at download time, so
-    # repeated downloads of the same generated workbook keep the same
-    # filename no matter how much later they happen.
-    st.session_state["generated_at"] = datetime.now()
+    # Identifies THIS generation, so the Download section (in
+    # _render_result) knows whether it still needs to capture a fresh
+    # browser timestamp or already has one for the current workbook --
+    # see _BROWSER_LOCAL_TIMESTAMP_JS and streamlit_js_eval's use below.
+    # The actual timestamp isn't captured here: a component call can
+    # only round-trip to the browser and back as part of the normal
+    # render flow, not synchronously inside this function.
+    st.session_state["generation_id"] = st.session_state.get("generation_id", 0) + 1
     st.session_state["target_year"] = year
     st.rerun()
 
@@ -378,19 +411,85 @@ def _render_result(result: "bridge.GenerationResult") -> None:
     # ---- Download -------------------------------------------------
     if result.success and result.output_path and os.path.isfile(result.output_path):
         card_open("Download Results")
-        # Filename uses the stored `generated_at` timestamp (captured once,
-        # in _run_generation, at the moment this workbook was produced) --
-        # NOT datetime.now() here, so the name stays identical across any
-        # number of downloads until the user runs Generate again. Falls
-        # back to the on-disk name only in the defensive case where
-        # `generated_at` is somehow missing (e.g. a pre-existing session).
+
+        # Capture the browser's own local date/time exactly once per
+        # generation -- not on every rerun, and never re-captured just
+        # because the user downloads again later. `generation_id` (set
+        # once per successful Generate, in _run_generation) is the
+        # lock: once a browser timestamp has been captured FOR this
+        # generation_id, this block is skipped entirely on every later
+        # rerun (further Downloads, navigating away and back, etc.),
+        # so the filename can never drift from what it was the moment
+        # generation completed.
+        #
+        # This needs a browser-side round trip at all because
+        # Streamlit's Python code runs entirely server-side and has no
+        # request-scoped notion of "the browser's timezone" -- since
+        # this app is used by both India and US teams, the server's own
+        # clock (in whatever timezone it happens to run) cannot stand
+        # in for either of theirs without guessing. streamlit_js_eval
+        # is a thin, no-build-step bridge over Streamlit's own custom-
+        # component protocol; the JS itself reads the browser's own
+        # `Date` object, which is already expressed in whatever
+        # timezone the browser/OS is set to -- no timezone name or
+        # offset ever has to be known or handled on the server side.
+        generation_id = st.session_state.get("generation_id")
+        if st.session_state.get("generated_at_generation_id") != generation_id:
+            browser_now = streamlit_js_eval(
+                js_expressions=_browser_local_timestamp_js(generation_id),
+                key=f"browser_now_{generation_id}",
+                want_output=True,
+            )
+            if browser_now:
+                st.session_state["generated_at"] = browser_now
+                st.session_state["generated_at_generation_id"] = generation_id
+            else:
+                # The component's reply hasn't arrived yet -- this is
+                # the FIRST render right after Generate, before the
+                # browser round trip completes (typically well under a
+                # second). Rather than show a download button now with
+                # a fallback name and a DIFFERENT (correct) name on the
+                # very next render, force a couple of quick, invisible
+                # reruns to give the round trip a moment to land, so
+                # the button/filename the user actually sees is already
+                # final and never changes across repeated downloads.
+                # Only after a few short attempts do we give up and
+                # fall back -- and once that fallback is used, it too
+                # is locked in below exactly like a real captured value,
+                # so it still never drifts on a later download.
+                retry_key = f"browser_now_retries_{generation_id}"
+                retries = st.session_state.get(retry_key, 0)
+                if retries < 6:
+                    st.session_state[retry_key] = retries + 1
+                    time.sleep(0.2)
+                    st.rerun()
+                else:
+                    # Give up waiting for the browser and lock in a
+                    # clearly-labeled UTC fallback instead -- computed
+                    # exactly once, right here, not re-computed on
+                    # every later render, so it's exactly as stable
+                    # across repeated downloads as a real captured
+                    # browser value would have been.
+                    st.session_state["generated_at"] = f"{datetime.now(timezone.utc):%Y-%m-%d_%H-%M}_UTC"
+                    st.session_state["generated_at_generation_id"] = generation_id
+
         generated_at = st.session_state.get("generated_at")
+        stem = Path(result.output_path).stem
+        suffix = Path(result.output_path).suffix
         if generated_at is not None:
-            stem = Path(result.output_path).stem
-            suffix = Path(result.output_path).suffix
-            download_name = f"{stem}_{generated_at:%Y-%m-%d_%H-%M}{suffix}"
+            # Already a pre-formatted "YYYY-MM-DD_HH-MM" string from the
+            # browser (see _BROWSER_LOCAL_TIMESTAMP_JS) -- no further
+            # formatting needed, and no timezone is implied beyond
+            # "whatever the browser that generated this already showed".
+            download_name = f"{stem}_{generated_at}{suffix}"
         else:
-            download_name = Path(result.output_path).name
+            # Truly defensive only: with the retry loop above, this
+            # point is only reached once `generated_at` has already
+            # been locked in for this generation_id (real browser value
+            # or the UTC fallback) -- `generated_at` should never
+            # actually be None here. Kept only in case `generation_id`
+            # itself is ever unexpectedly absent.
+            download_name = f"{stem}_{datetime.now(timezone.utc):%Y-%m-%d_%H-%M}_UTC{suffix}"
         with open(result.output_path, "rb") as fh:
             st.download_button(
                 "\U0001F4E5 Download Summary Workbook",

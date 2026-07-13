@@ -118,21 +118,35 @@ def main() -> int:
         if width_mismatches:
             problems.append(f"Column width mismatches after shift: {width_mismatches[:10]}")
 
-        # --- NO cell in the copy may be a live formula -- see
-        #     sheet_copy.py's module docstring for why: a formula
-        #     referencing a sheet this copy doesn't also bring over
-        #     (e.g. a VLOOKUP into "Salary Projections 2026") produces
-        #     both an "external links" warning and a #REF!/#N/A in
-        #     Excel. Every cell must carry its already-computed value
-        #     instead. ---
-        formula_cells = []
+        # --- NO CROSS-SHEET formula may remain -- see sheet_copy.py's
+        #     module docstring for why: a formula referencing a sheet
+        #     this copy doesn't also bring over (e.g. a VLOOKUP into
+        #     "Salary Projections 2026") produces both an "external
+        #     links" warning and a #REF!/#N/A in Excel. Those cells
+        #     must carry their already-computed value instead. A
+        #     SAME-sheet formula (e.g. "=D4-E4") is expected and
+        #     correct to remain live. ---
+        cross_sheet_formula_cells = []
+        same_sheet_formula_cells = []
         for row in new_f.iter_rows():
             for cell in row:
                 val = cell.value
-                if (isinstance(val, str) and val.startswith("=")) or type(val).__name__ == "ArrayFormula":
-                    formula_cells.append(cell.coordinate)
-        if formula_cells:
-            problems.append(f"{len(formula_cells)} formula cell(s) remain in the third sheet (should be 0): {formula_cells[:10]}")
+                text = val.text if type(val).__name__ == "ArrayFormula" else val
+                if isinstance(text, str) and text.startswith("="):
+                    if "!" in text:
+                        cross_sheet_formula_cells.append(cell.coordinate)
+                    else:
+                        same_sheet_formula_cells.append(cell.coordinate)
+        if cross_sheet_formula_cells:
+            problems.append(f"{len(cross_sheet_formula_cells)} cross-sheet formula(s) remain in the third sheet (should be 0): {cross_sheet_formula_cells[:10]}")
+        if not same_sheet_formula_cells:
+            problems.append("No same-sheet formulas were preserved at all -- expected at least some (e.g. '=D4-E4'-style cells)")
+
+        # --- every preserved same-sheet formula has a cached value
+        #     (same "visible immediately" requirement as Sheets 1/2) ---
+        missing_cached = [c for c in same_sheet_formula_cells if new_v[c].value is None]
+        if missing_cached:
+            problems.append(f"{len(missing_cached)} preserved formula(s) have no cached value: {missing_cached[:10]}")
 
         # --- values must match the SOURCE's own computed result exactly ---
         value_mismatches = 0

@@ -300,7 +300,7 @@ def generate_summary(
         wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles)
 
         progress(f"Copying '{main_sheet_name}' as a third worksheet…")
-        copy_source_sheet_as_new_worksheet(wb, str(input_path_obj), main_sheet_name, cmap.comments)
+        copy_source_sheet_as_new_worksheet(wb, str(input_path_obj), main_sheet_name, cmap.comments, writer._formula_cache)
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir_obj / output_filename

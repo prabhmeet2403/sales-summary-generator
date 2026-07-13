@@ -235,7 +235,7 @@ def main(argv=None) -> int:
         monthly_section_results = worksheet2_monthly_section_results[:len(section_results)]
         wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles)
 
-        copy_source_sheet_as_new_worksheet(wb, str(input_path), main_sheet_name, cmap.comments)
+        copy_source_sheet_as_new_worksheet(wb, str(input_path), main_sheet_name, cmap.comments, writer._formula_cache)
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir / output_filename

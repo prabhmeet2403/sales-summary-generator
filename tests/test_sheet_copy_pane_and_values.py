@@ -54,6 +54,11 @@ def _build_source_workbook(path: str) -> None:
     other["A1"] = 42
     ws["D2"] = "=Other!A1*2"
 
+    # A SAME-sheet formula referencing a column AFTER the one about to
+    # be removed (C, index 3) -- must stay a live formula, with its own
+    # reference shifted left by one once column B (Comments) is gone.
+    ws["E2"] = "=C2+1"
+
     # Frozen pane (columns A-C, rows 1-2 -- xSplit=3, ySplit=2) that has
     # ALSO been scrolled down independently, so topLeftCell is nowhere
     # near the actual split point -- the exact shape that broke the old
@@ -70,7 +75,7 @@ def _build_source_workbook(path: str) -> None:
     # same injection helper `SummaryWriter.patch_cached_formula_values`
     # already relies on, rather than a second implementation of it.
     from summary_writer import _inject_cached_formula_values
-    _inject_cached_formula_values(path, [("Source", "D2", 84.0)])
+    _inject_cached_formula_values(path, [("Source", "D2", 84.0), ("Source", "E2", 101.0)])
 
 
 def main() -> int:
@@ -82,7 +87,8 @@ def main() -> int:
 
         out_wb = Workbook()
         out_wb.remove(out_wb.active)
-        copy_source_sheet_as_new_worksheet(out_wb, source_path, "Source", comments_col=2)
+        formula_cache: list = []
+        copy_source_sheet_as_new_worksheet(out_wb, source_path, "Source", comments_col=2, formula_cache=formula_cache)
         out_path = f"{tmp}/out.xlsx"
         out_wb.save(out_path)
 
@@ -107,30 +113,48 @@ def main() -> int:
             if pane.state != "frozen":
                 problems.append(f"pane.state should be 'frozen', got {pane.state!r}")
 
-        # --- 2. Values only, never formulas ---
+        # --- 2. Cross-sheet formula becomes a value ---
         # D2 (source formula "=Other!A1*2") shifts to C2 (Comments/B removed).
         new_cell = new_ws["C2"]
         if isinstance(new_cell.value, str) and new_cell.value.startswith("="):
-            problems.append(f"Cell C2 is still a formula ({new_cell.value!r}), should be the computed value 84")
+            problems.append(f"Cell C2 is still a formula ({new_cell.value!r}), should be the computed value 84 (it referenced another sheet)")
         elif new_cell.value != 84:
             problems.append(f"Cell C2 should be the computed value 84, got {new_cell.value!r}")
 
-        # --- 3. No formula anywhere on the copied sheet ---
-        formula_cells = [
-            cell.coordinate for row in new_ws.iter_rows() for cell in row
-            if isinstance(cell.value, str) and cell.value.startswith("=")
-        ]
-        if formula_cells:
-            problems.append(f"Formula cell(s) found on the copied sheet (should be none): {formula_cells}")
+        # --- 3. Same-sheet formula stays LIVE, with its own reference
+        #     shifted for the column removal (E2 "=C2+1" -> D2 "=B2+1",
+        #     since Value/C shifted to B). ---
+        # E (col 5) shifts to D (col 4) once column B is removed.
+        same_sheet_cell = new_ws["D2"]
+        if same_sheet_cell.value != "=B2+1":
+            problems.append(f"Same-sheet formula should be preserved and shifted to '=B2+1', got {same_sheet_cell.value!r}")
 
-        # --- 4. Comments column actually removed ---
-        if new_ws.max_column != 3:  # Name, Value, (was D formula) = 3 columns after removing Comments
-            problems.append(f"Expected 3 columns after removing Comments, got {new_ws.max_column}")
+        # --- 4. No CROSS-SHEET formula remains anywhere (same-sheet
+        #     formulas, like D2 above, are expected and correct) ---
+        cross_sheet_formulas = [
+            cell.coordinate for row in new_ws.iter_rows() for cell in row
+            if isinstance(cell.value, str) and cell.value.startswith("=") and "!" in cell.value
+        ]
+        if cross_sheet_formulas:
+            problems.append(f"Cross-sheet formula(s) found on the copied sheet (should be none): {cross_sheet_formulas}")
+
+        # --- 5. formula_cache correctly tracks the preserved same-sheet
+        #     formula's already-computed value (for
+        #     SummaryWriter.patch_cached_formula_values to inject later) ---
+        cache_entry = next((e for e in formula_cache if e[1] == "D2"), None)
+        if cache_entry is None:
+            problems.append(f"formula_cache has no entry for the preserved formula at D2; entries: {formula_cache}")
+        elif abs(cache_entry[2] - 101.0) > 0.005:  # C2 (=100, now shifted to B2) + 1
+            problems.append(f"formula_cache value for D2 should be 101, got {cache_entry[2]}")
+
+        # --- 6. Comments column actually removed ---
+        if new_ws.max_column != 4:  # Name, Value, cross-sheet-turned-value, same-sheet-formula
+            problems.append(f"Expected 4 columns after removing Comments, got {new_ws.max_column}")
         headers = [new_ws.cell(row=1, column=c).value for c in range(1, new_ws.max_column + 1)]
         if "Comments" in headers:
             problems.append("'Comments' header still present")
 
-        # --- 5. No external references in the output package ---
+        # --- 7. No external references in the output package ---
         import zipfile
         with zipfile.ZipFile(out_path) as zf:
             if any("external" in n.lower() for n in zf.namelist()):

@@ -17,32 +17,136 @@ hardcoded letter) physically removed and every column after it shifted
 left by one, mirroring exactly what Excel's own "Delete Column" does.
 Kept separate so neither module's job is duplicated inside the other.
 
-VALUES ONLY, never formulas -- this is a deliberate correctness fix,
-not a simplification for its own sake. The source sheet's formulas
-routinely reference OTHER sheets in the Master workbook (e.g.
-`=VLOOKUP($A13,'Salary Projections 2026'!$A:$D,3,FALSE)`), which this
-module intentionally does not also copy (only the one sheet named is
-brought over). Carrying a formula like that into the output verbatim
-leaves it pointing at a sheet name that does not exist in THIS
-workbook; Excel cannot resolve that internally, treats it as needing
-an external source, and shows both the "this workbook contains links
-to external sources" warning and a #REF!/#N/A in the cell -- neither
-of which has anything to do with the column-removal below. Writing
-each cell's already-computed value (read from a `data_only=True` load
-of the source -- i.e. exactly what Excel itself last displayed there,
-never recomputed by this code) produces a sheet that looks identical
-but carries no formula for Excel to fail to resolve.
+FORMULAS: same-sheet formulas stay live; cross-sheet formulas become
+values. A formula like `=D4-E4` or `=SUMPRODUCT(D4:AK4)` only ever
+needs cells on THIS sheet, which this module also copies in full, so
+it keeps recalculating correctly and is kept as a live formula (with
+its own cell references shifted for the column removal, exactly as
+Excel itself would on a real "Delete Column"). A formula like
+`=VLOOKUP($A13,'Salary Projections 2026'!$A:$D,3,FALSE)` depends on a
+DIFFERENT sheet that this module does not also bring over (only the
+one sheet named is copied) -- Excel cannot resolve that sheet inside
+this workbook, treats it as needing an external source, and shows both
+the "this workbook contains links to external sources" warning and a
+#REF!/#N/A in the cell. Those are converted to their already-computed
+value instead (read from a `data_only=True` load of the source -- i.e.
+exactly what Excel itself last displayed there, never recomputed by
+this code), which carries no formula for Excel to fail to resolve.
 """
 
 from __future__ import annotations
 
+import colorsys
+import re
+import xml.etree.ElementTree as ET
 from copy import copy, deepcopy
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles.colors import Color
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 from openpyxl.utils.cell import coordinate_from_string
+from openpyxl.worksheet.formula import ArrayFormula
 from openpyxl.worksheet.worksheet import Worksheet
+
+# Excel's theme-color index order for a `<color theme="N">` reference --
+# NOT the raw document order the <a:clrScheme> XML itself lists colors
+# in (dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink). The first two
+# slots are swapped relative to that document order; this exact swap is
+# a well-documented, widely-relied-on quirk of the OOXML spreadsheet
+# theme-color convention.
+_THEME_SLOT_ORDER = (
+    "lt1", "dk1", "lt2", "dk2",
+    "accent1", "accent2", "accent3", "accent4", "accent5", "accent6",
+    "hlink", "folHlink",
+)
+_DRAWINGML_NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
+
+
+def _parse_theme_palette(theme_xml: Optional[bytes]) -> Optional[List[str]]:
+    """Return the workbook's 12-slot theme color palette, as 6-digit
+    hex RGB strings in Excel's own theme-index order (see
+    `_THEME_SLOT_ORDER`) -- or None if `theme_xml` is missing or
+    doesn't parse, in which case theme colors are left unresolved
+    (copied through as-is, same as before this fix existed).
+    """
+    if not theme_xml:
+        return None
+    try:
+        root = ET.fromstring(theme_xml)
+    except ET.ParseError:
+        return None
+    scheme = root.find(".//a:clrScheme", _DRAWINGML_NS)
+    if scheme is None:
+        return None
+
+    def _slot_hex(tag: str) -> Optional[str]:
+        el = scheme.find(f"a:{tag}", _DRAWINGML_NS)
+        if el is None:
+            return None
+        srgb = el.find("a:srgbClr", _DRAWINGML_NS)
+        if srgb is not None:
+            return srgb.get("val")
+        sys_clr = el.find("a:sysClr", _DRAWINGML_NS)
+        if sys_clr is not None:
+            return sys_clr.get("lastClr")
+        return None
+
+    palette = [_slot_hex(tag) for tag in _THEME_SLOT_ORDER]
+    return palette if all(palette) else None
+
+
+def _apply_tint(hex_rgb: str, tint: float) -> str:
+    """Excel's own tint/shade algorithm: convert sRGB to HSL, adjust
+    luminance by `tint` (positive lightens toward white, negative
+    darkens toward black), convert back. This is the same formula
+    Excel itself uses to render a themed color's tinted variants (the
+    lighter/darker swatches in the color picker), applied here so a
+    resolved theme color LOOKS like what the source intended, not just
+    the raw, untinted theme color.
+    """
+    r, g, b = (int(hex_rgb[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    if tint < 0:
+        l = l * (1.0 + tint)
+    else:
+        l = l * (1.0 - tint) + tint
+    l = min(1.0, max(0.0, l))
+    r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
+    return f"{round(r2 * 255):02X}{round(g2 * 255):02X}{round(b2 * 255):02X}"
+
+
+def _resolve_theme_color(color: Optional[Color], theme_palette: Optional[List[str]]) -> Optional[Color]:
+    """If `color` is a theme-indexed reference (`type == "theme"`),
+    return a NEW `Color` with an explicit, resolved `rgb` value instead
+    -- otherwise return `color` unchanged (already explicit rgb,
+    legacy indexed, or auto).
+
+    This is the actual fix for a real bug: a theme color's rendered
+    RGB depends on the WORKBOOK'S OWN theme definition
+    (`xl/theme/theme1.xml`), which differs between the uploaded Master
+    workbook and a freshly-created `openpyxl.Workbook()` (the latter
+    ships its own default "Office" theme). The same `theme=9` reference
+    is `accent6`, which is a GREEN (`4EA72E`) in the Master workbook
+    observed here but an ORANGE (`F79646`) in openpyxl's default theme
+    -- identical theme index, genuinely different colors, which is
+    exactly the wrong-color symptom this resolves. Converting to an
+    explicit RGB value makes the color workbook-independent: it will
+    render identically no matter what theme is active for whichever
+    workbook this cell ends up in.
+
+    Sheets 1/2 are entirely unaffected by this: they are built
+    separately (`summary_writer.py`) and never touched here; resolving
+    colors on THIS module's copied cells changes nothing about the
+    workbook's own theme.xml or any other sheet's styling.
+    """
+    if color is None or color.type != "theme" or theme_palette is None:
+        return color
+    if color.theme < 0 or color.theme >= len(theme_palette):
+        return color
+    base_hex = theme_palette[color.theme]
+    resolved_hex = _apply_tint(base_hex, color.tint or 0.0) if color.tint else base_hex
+    return Color(rgb=f"FF{resolved_hex}")
 
 
 def copy_source_sheet_as_new_worksheet(
@@ -50,15 +154,16 @@ def copy_source_sheet_as_new_worksheet(
     source_path: str,
     sheet_name: str,
     comments_col: Optional[int],
+    formula_cache: List[Tuple[str, str, float]],
 ) -> None:
     """Append `sheet_name` from `source_path` onto `wb` as a new sheet
     with the exact same name, copying everything needed to make it
-    LOOK identical -- computed cell values (never formulas -- see
-    module docstring), fonts/fills/borders/number formats/alignment,
-    column widths, row heights, merged cells, freeze panes/split panes/
-    scroll position, autofilter, conditional formatting, print/page
-    setup, and hidden rows/columns -- with one exception: if
-    `comments_col` is given (1-based column index, e.g.
+    LOOK identical -- computed cell values or, where safe, live
+    formulas (see module docstring), fonts/fills/borders/number
+    formats/alignment, column widths, row heights, merged cells,
+    freeze panes/split panes/scroll position, autofilter, conditional
+    formatting, print/page setup, and hidden rows/columns -- with one
+    exception: if `comments_col` is given (1-based column index, e.g.
     `ColumnMap.comments` -- resolved dynamically by header text
     elsewhere, never hardcoded), that ENTIRE column is removed (not
     just blanked), and every column after it shifts left by one,
@@ -73,19 +178,25 @@ def copy_source_sheet_as_new_worksheet(
         comments_col: 1-based column index of the Comments column on
             the SOURCE sheet, or None if it has none (nothing is
             removed in that case).
+        formula_cache: The list `SummaryWriter.patch_cached_formula_values`
+            reads after `wb.save(...)` -- pass `writer._formula_cache`
+            so this sheet's preserved same-sheet formulas get a cached
+            value through that exact same, already-tested pass, with
+            no separate injection step of its own.
     """
     source_wb_values = load_workbook(source_path, data_only=True)
     source_wb_styles = load_workbook(source_path, data_only=False)
     src_values = source_wb_values[sheet_name]
     src_styles = source_wb_styles[sheet_name]
+    theme_palette = _parse_theme_palette(source_wb_styles.loaded_theme)
 
     new_ws = wb.create_sheet(title=sheet_name)
-    _copy_cells(src_values, src_styles, new_ws, comments_col)
+    _copy_cells(src_values, src_styles, new_ws, comments_col, theme_palette, sheet_name, formula_cache)
     _copy_dimensions(src_styles, new_ws, comments_col)
     _copy_merged_cells(src_styles, new_ws, comments_col)
     _copy_sheet_view(src_styles, new_ws, comments_col)
     _copy_page_setup(src_styles, new_ws, comments_col)
-    _copy_conditional_formatting(src_styles, new_ws, comments_col)
+    _copy_conditional_formatting(src_styles, new_ws, comments_col, theme_palette)
 
 
 def _remap_column(col_idx: int, removed_col: Optional[int]) -> Optional[int]:
@@ -145,7 +256,76 @@ def _remap_single_range(range_str: str, removed_col: int) -> Optional[str]:
     return f"{get_column_letter(new_min)}{min_row}:{get_column_letter(new_max)}{max_row}"
 
 
-def _copy_cells(src_values: Worksheet, src_styles: Worksheet, dest: Worksheet, comments_col: Optional[int]) -> None:
+# Matches an A1-style cell reference with optional absolute-reference
+# `$` markers (e.g. `A1`, `$A$1`, `$A1`, `A$1`). Used both to detect a
+# cross-sheet formula (a `'Sheet Name'!` or `SheetName!` prefix right
+# before a match) and to rewrite same-sheet formulas' own references
+# for the column removal.
+_CELL_REF_RE = re.compile(r"(\$?)([A-Za-z]{1,3})(\$?)(\d+)")
+_SHEET_QUALIFIED_RE = re.compile(r"(?:'[^']+'|[A-Za-z_][A-Za-z0-9_.]*)!")
+_STRING_LITERAL_RE = re.compile(r'"[^"]*"')
+
+
+def _formula_references_other_sheet(formula: str) -> bool:
+    """True if `formula` contains a sheet-qualified reference
+    (`'Some Sheet'!A1` or `SheetName!A1`) anywhere outside a quoted
+    string literal -- i.e. it depends on a DIFFERENT worksheet, which
+    this module does not also copy. See the module docstring for why
+    such formulas are converted to their value instead of kept live.
+    """
+    string_spans = [m.span() for m in _STRING_LITERAL_RE.finditer(formula)]
+    for m in _SHEET_QUALIFIED_RE.finditer(formula):
+        if not any(start <= m.start() < end for start, end in string_spans):
+            return True
+    return False
+
+
+def _shift_formula_columns(formula: str, comments_col: Optional[int]) -> Optional[str]:
+    """Rewrite every cell/range reference's column letter in a
+    SAME-SHEET formula to account for `comments_col` being removed --
+    mirroring exactly what Excel itself does when a column is deleted:
+    references before it are untouched, references after it shift left
+    by one. Skips any match inside a quoted string literal (so e.g. a
+    label like `="Q1 Total: "&SUM(...)` doesn't have "Q1" mistaken for
+    a cell reference). Returns None if the formula references the
+    removed column itself -- which would become a dangling #REF! once
+    that column no longer exists -- so the caller can fall back to the
+    cell's value instead of keeping a broken formula.
+    """
+    if comments_col is None:
+        return formula
+
+    string_spans = [m.span() for m in _STRING_LITERAL_RE.finditer(formula)]
+    broke_reference = False
+
+    def _replace(m: re.Match) -> str:
+        nonlocal broke_reference
+        if any(start <= m.start() < end for start, end in string_spans):
+            return m.group(0)
+        dollar_col, col_letters, dollar_row, row_num = m.groups()
+        try:
+            col_idx = column_index_from_string(col_letters.upper())
+        except ValueError:
+            return m.group(0)
+        if col_idx == comments_col:
+            broke_reference = True
+            return m.group(0)
+        new_idx = col_idx if col_idx < comments_col else col_idx - 1
+        return f"{dollar_col}{get_column_letter(new_idx)}{dollar_row}{row_num}"
+
+    rewritten = _CELL_REF_RE.sub(_replace, formula)
+    return None if broke_reference else rewritten
+
+
+def _copy_cells(
+    src_values: Worksheet,
+    src_styles: Worksheet,
+    dest: Worksheet,
+    comments_col: Optional[int],
+    theme_palette: Optional[List[str]],
+    sheet_name: str,
+    formula_cache: List[Tuple[str, str, float]],
+) -> None:
     for row in src_styles.iter_rows():
         for cell in row:
             new_col = _remap_column(cell.column, comments_col)
@@ -153,20 +333,72 @@ def _copy_cells(src_values: Worksheet, src_styles: Worksheet, dest: Worksheet, c
                 continue  # this cell is in the removed Comments column
 
             new_cell = dest.cell(row=cell.row, column=new_col)
-            # The already-computed value, not the formula -- see module
-            # docstring. Reading from the `data_only=True` sibling sheet
-            # rather than anything derived from `cell` itself, since
-            # `cell` (from the `data_only=False` load) holds formula
-            # text for a formula cell, not its result.
-            new_cell.value = src_values.cell(row=cell.row, column=cell.column).value
+            _set_cell_value_or_formula(
+                cell, new_cell, src_values, comments_col, sheet_name, formula_cache,
+            )
 
             if cell.has_style:
-                new_cell.font = copy(cell.font)
+                new_font = copy(cell.font)
+                new_font.color = _resolve_theme_color(cell.font.color, theme_palette)
+                new_cell.font = new_font
+
                 new_cell.border = copy(cell.border)
-                new_cell.fill = copy(cell.fill)
+
+                new_fill = copy(cell.fill)
+                new_fill.fgColor = _resolve_theme_color(cell.fill.fgColor, theme_palette)
+                new_fill.bgColor = _resolve_theme_color(cell.fill.bgColor, theme_palette)
+                new_cell.fill = new_fill
+
                 new_cell.number_format = cell.number_format
                 new_cell.protection = copy(cell.protection)
                 new_cell.alignment = copy(cell.alignment)
+
+
+def _set_cell_value_or_formula(
+    cell,
+    new_cell,
+    src_values: Worksheet,
+    comments_col: Optional[int],
+    sheet_name: str,
+    formula_cache: List[Tuple[str, str, float]],
+) -> None:
+    """Decide, for one cell, whether to keep a live (column-shifted)
+    formula or write its computed value -- see the module docstring's
+    "FORMULAS" section for the full reasoning.
+    """
+    raw_value = cell.value
+    is_array_formula = isinstance(raw_value, ArrayFormula)
+    formula_text = raw_value.text if is_array_formula else raw_value
+    is_formula = isinstance(formula_text, str) and formula_text.startswith("=")
+
+    cached_value = src_values.cell(row=cell.row, column=cell.column).value
+
+    if not is_formula or _formula_references_other_sheet(formula_text):
+        # Not a formula at all, OR depends on a sheet this module
+        # doesn't also copy: write the already-computed value.
+        new_cell.value = cached_value
+        return
+
+    shifted_text = _shift_formula_columns(formula_text, comments_col)
+    if shifted_text is None:
+        # References the Comments column itself -- would be a
+        # dangling #REF! once that column is gone. Fall back to value.
+        new_cell.value = cached_value
+        return
+
+    if is_array_formula:
+        shifted_ref = _remap_range_string(raw_value.ref, comments_col) or new_cell.coordinate
+        new_cell.value = ArrayFormula(ref=shifted_ref, text=shifted_text)
+    else:
+        new_cell.value = shifted_text
+
+    # Same as every other live formula this app writes: queue the
+    # already-computed result for `SummaryWriter.patch_cached_formula_values`
+    # (see summary_writer.py) to inject after `wb.save(...)`, so the
+    # formula displays correctly immediately rather than only after
+    # Excel recalculates it.
+    if isinstance(cached_value, (int, float)):
+        formula_cache.append((sheet_name, new_cell.coordinate, float(cached_value)))
 
 
 def _copy_dimensions(src: Worksheet, dest: Worksheet, comments_col: Optional[int]) -> None:
@@ -266,10 +498,24 @@ def _copy_page_setup(src: Worksheet, dest: Worksheet, comments_col: Optional[int
     dest.sheet_properties.pageSetUpPr = copy(src.sheet_properties.pageSetUpPr)
 
 
-def _copy_conditional_formatting(src: Worksheet, dest: Worksheet, comments_col: Optional[int]) -> None:
+def _copy_conditional_formatting(
+    src: Worksheet, dest: Worksheet, comments_col: Optional[int], theme_palette: Optional[List[str]],
+) -> None:
     for cf_range in src.conditional_formatting:
         remapped_sqref = _remap_range_string(str(cf_range.sqref), comments_col)
         if not remapped_sqref:
             continue  # this rule applied only to the now-removed column
         for rule in cf_range.rules:
-            dest.conditional_formatting.add(remapped_sqref, copy(rule))
+            new_rule = copy(rule)
+            dxf = new_rule.dxf
+            if dxf is not None:
+                if dxf.font is not None and dxf.font.color is not None:
+                    dxf.font = copy(dxf.font)
+                    dxf.font.color = _resolve_theme_color(dxf.font.color, theme_palette)
+                if dxf.fill is not None:
+                    dxf.fill = copy(dxf.fill)
+                    if dxf.fill.fgColor is not None:
+                        dxf.fill.fgColor = _resolve_theme_color(dxf.fill.fgColor, theme_palette)
+                    if dxf.fill.bgColor is not None:
+                        dxf.fill.bgColor = _resolve_theme_color(dxf.fill.bgColor, theme_palette)
+            dest.conditional_formatting.add(remapped_sqref, new_rule)

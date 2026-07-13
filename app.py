@@ -21,6 +21,7 @@ import os
 import shutil
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -126,7 +127,7 @@ def _reset_for_new_upload() -> None:
         shutil.rmtree(old_tmp, ignore_errors=True)
     for key in (
         "master_path", "tmp_dir", "preview", "_base_preview", "_preview_error",
-        "gen_result", "elapsed_seconds", "upload_name", "year_input", "target_year",
+        "gen_result", "elapsed_seconds", "generated_at", "upload_name", "year_input", "target_year",
     ):
         st.session_state.pop(key, None)
 
@@ -340,6 +341,13 @@ def _run_generation(master_path: str, year: int) -> None:
         driver.fail(result.error_message or "Generation failed.")
     st.session_state["gen_result"] = result
     st.session_state["elapsed_seconds"] = elapsed
+    # Captured once, here, at the moment generation actually completes --
+    # not read again until the NEXT successful generation overwrites it.
+    # The Download button (below) reuses this stored value for the
+    # filename rather than calling datetime.now() at download time, so
+    # repeated downloads of the same generated workbook keep the same
+    # filename no matter how much later they happen.
+    st.session_state["generated_at"] = datetime.now()
     st.session_state["target_year"] = year
     st.rerun()
 
@@ -370,11 +378,24 @@ def _render_result(result: "bridge.GenerationResult") -> None:
     # ---- Download -------------------------------------------------
     if result.success and result.output_path and os.path.isfile(result.output_path):
         card_open("Download Results")
+        # Filename uses the stored `generated_at` timestamp (captured once,
+        # in _run_generation, at the moment this workbook was produced) --
+        # NOT datetime.now() here, so the name stays identical across any
+        # number of downloads until the user runs Generate again. Falls
+        # back to the on-disk name only in the defensive case where
+        # `generated_at` is somehow missing (e.g. a pre-existing session).
+        generated_at = st.session_state.get("generated_at")
+        if generated_at is not None:
+            stem = Path(result.output_path).stem
+            suffix = Path(result.output_path).suffix
+            download_name = f"{stem}_{generated_at:%Y-%m-%d_%H-%M}{suffix}"
+        else:
+            download_name = Path(result.output_path).name
         with open(result.output_path, "rb") as fh:
             st.download_button(
                 "\U0001F4E5 Download Summary Workbook",
                 data=fh.read(),
-                file_name=Path(result.output_path).name,
+                file_name=download_name,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )

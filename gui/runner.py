@@ -320,6 +320,19 @@ def generate_summary(
         writer.apply_cross_sheet_total_rows(
             wb, worksheet2_name, worksheet3_name, main_sheet_name, str(input_path_obj), cmap.comments,
         )
+        # Sized last, once every sheet's final content (including the
+        # TOTAL Secured/Prospecting rows just filled in above) is in
+        # place -- Worksheet 1 is looked up by position (its own title
+        # is a fixed constant, not year-based -- see
+        # SummaryWriter.build()), never hardcoded here.
+        progress("Auto-sizing column widths…")
+        writer.autofit_worksheets(wb, wb.sheetnames[0], worksheet2_name)
+        # Row heights are deliberately left alone here (Excel's own
+        # default for every row) -- keeping every row the same,
+        # uniform height regardless of column width or wrapped comment
+        # length was an explicit request; the Comments column is given
+        # extra horizontal room instead (see column_autofit.py) so
+        # wrapped text needs fewer lines rather than growing its row.
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir_obj / output_filename

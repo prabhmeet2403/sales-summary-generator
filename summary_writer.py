@@ -58,7 +58,8 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 from copy import copy
-from typing import Dict, List, Optional, Tuple
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -66,6 +67,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 import config
+import column_autofit
 from aggregator import GroupSummary
 
 THIN_BLACK_BORDER = Border(
@@ -254,6 +256,95 @@ def _patch_sheet_cached_values(sheet_xml: bytes, cell_entries: List[Tuple[str, f
     return ET.tostring(root, encoding="UTF-8", xml_declaration=False)
 
 
+_MONTH_ABBR_TO_NUM = {abbr.lower(): num for num, abbr in enumerate(calendar.month_abbr) if abbr}
+
+
+def _normalize_header_text(value: object) -> str:
+    """Lowercase, letters-only normalization for header-label matching
+    (so "Total Revenue", "TOTAL REVENUE", "Total  Revenue" etc. all
+    compare equal) -- used only to recognize which LOGICAL column a
+    header cell represents, never to touch the cell itself."""
+    if value is None:
+        return ""
+    return re.sub(r"[^a-z]", "", str(value).lower())
+
+
+def _map_source_sheet_columns(ws: Worksheet) -> Dict[Any, int]:
+    """Build a {logical_key: column_index} map for Sheet 3 (the
+    verbatim copy of the Master workbook's own "Sales by Customer-
+    <year>" sheet -- see sheet_copy.py) by READING ITS HEADER, never by
+    assuming a fixed column position: row 1 holds the
+    Actual/Forecast/Salary_$600/Margin type label for that column, row
+    2 holds that month's real Excel date (the SAME date repeated
+    across all 3 of that month's columns) for month columns, or a
+    plain text label (Name/POC/Total Revenue/...) for identity/summary
+    columns.
+
+    Only the logical keys `apply_cross_sheet_total_rows` actually needs
+    are produced here -- `("month", 1-12, "value")`,
+    `("month", 1-12, "margin")`, `"total_revenue"`, `"total_margin"`,
+    `"confidence"`. Everything else on this sheet (Service, Group,
+    Sub-Group, the Salary_$600 columns, prior-year columns, ...) has no
+    corresponding column on Worksheet 2 at all and is intentionally
+    left untracked -- there being no logical key for it is exactly what
+    causes it to be correctly skipped when copying values across.
+    """
+    mapping: Dict[Any, int] = {}
+    for col in range(1, ws.max_column + 1):
+        type_label = _normalize_header_text(ws.cell(row=1, column=col).value)
+        field_value = ws.cell(row=2, column=col).value
+        if isinstance(field_value, (datetime, date)):
+            month = field_value.month
+            if "actual" in type_label or "forecast" in type_label:
+                mapping[("month", month, "value")] = col
+            elif "margin" in type_label:
+                mapping[("month", month, "margin")] = col
+            # "Salary_$600" columns: no Worksheet 2 equivalent, skipped.
+            continue
+        field_label = _normalize_header_text(field_value)
+        if field_label == "totalrevenue":
+            mapping["total_revenue"] = col
+        elif field_label == "totalmargin":
+            mapping["total_margin"] = col
+        elif field_label in ("renewalconfidence", "confidence"):
+            mapping["confidence"] = col
+    return mapping
+
+
+def _map_worksheet2_columns(ws: Worksheet) -> Dict[Any, int]:
+    """Build the same {logical_key: column_index} map as
+    `_map_source_sheet_columns`, but for Worksheet 2's own monthly-role
+    layout, again by READING ITS HEADER rather than assuming a fixed
+    column position: row 2 holds that month's short name (e.g. "Jan")
+    for the value column, or the literal text "Margin" for that
+    month's margin column immediately to its right -- row 1 is checked
+    only for Total/Margin/Confidence, since it is BLANK on the margin
+    half of each month's pair (only the value column repeats
+    "Actual"/"Forecast" there), so row 2 is the reliable signal for
+    which month/sub-column a cell represents.
+    """
+    mapping: Dict[Any, int] = {}
+    for col in range(1, ws.max_column + 1):
+        row1 = _normalize_header_text(ws.cell(row=1, column=col).value)
+        row2 = _normalize_header_text(ws.cell(row=2, column=col).value)
+        if row2 in _MONTH_ABBR_TO_NUM:
+            mapping[("month", _MONTH_ABBR_TO_NUM[row2], "value")] = col
+            continue
+        if row2 == "margin":
+            prev_row2 = _normalize_header_text(ws.cell(row=2, column=col - 1).value) if col > 1 else ""
+            month = _MONTH_ABBR_TO_NUM.get(prev_row2)
+            if month:
+                mapping[("month", month, "margin")] = col
+            continue
+        if row1 == "total":
+            mapping["total_revenue"] = col
+        elif row1 == "margin":
+            mapping["total_margin"] = col
+        elif row1 == "confidence":
+            mapping["confidence"] = col
+    return mapping
+
+
 class SummaryWriter:
     def __init__(self, target_year: int, prior_years: List[int], years_with_margin: List[int]):
         self.target_year = target_year
@@ -333,13 +424,19 @@ class SummaryWriter:
         """Fill in the two placeholder rows `_build_monthly_sheet`
         already reserved -- "TOTAL Secured" (right after "Subtotal :
         Staffing- Secured") and "TOTAL Prospecting" (right after this
-        sheet's last section subtotal) -- with the exact values and
-        formatting of the correspondingly-labeled row on Sheet 3 (the
-        verbatim copy of the Master workbook's own sheet -- see
-        sheet_copy.py), copied column-for-column (Sheet 3's own column
-        layout, not Worksheet 2's monthly-role columns, since these are
-        grand-total recap rows carried over as-is from the source, not
-        remapped into Worksheet 2's per-month structure).
+        sheet's last section subtotal) -- with values from the
+        correspondingly-labeled row on Sheet 3 (the verbatim copy of
+        the Master workbook's own sheet -- see sheet_copy.py), matched
+        by HEADER MEANING rather than column position (see
+        `_map_source_sheet_columns`/`_map_worksheet2_columns`): Sheet 3
+        has THREE columns per month (Value, Salary_$600, Margin) while
+        Worksheet 2 has only TWO (Value, Margin), so a positional
+        column-for-column copy silently drifts out of alignment after
+        the first month -- matching by "which month, value or margin"
+        instead keeps every value under its correct month/metric column
+        regardless of either sheet's column count, order, or future
+        changes. Formatting is applied uniformly across the whole row
+        (see below), not copied per source column.
 
         VALUES are read from a fresh ``data_only=True`` load of
         ``source_path`` -- the true original Master workbook, looked up
@@ -390,6 +487,21 @@ class SummaryWriter:
         # happened to be styled with.
         style_row_in_ws3 = self._find_row_by_label(ws3, "TOTAL Prospecting")
 
+        # HEADER-DRIVEN column mapping -- built ONCE per call, from
+        # each sheet's own header row, never from a fixed column
+        # index. Sheet 3 (the verbatim source copy) has THREE columns
+        # per month (Value, Salary_$600, Margin); Worksheet 2 has only
+        # TWO (Value, Margin) -- a purely positional column-for-column
+        # copy silently drifts out of alignment starting at the second
+        # month once those different column counts are copied 1:1 (a
+        # real bug this replaces). Matching by logical key (which
+        # month, and value-vs-margin) instead means the mapping stays
+        # correct regardless of how many columns either sheet has, what
+        # order they're in, or whether columns get added/removed in a
+        # future workbook.
+        source_col_map = _map_source_sheet_columns(ws3)
+        dest_col_map = _map_worksheet2_columns(ws2)
+
         for label in ("TOTAL Secured", "TOTAL Prospecting"):
             dest_row = self._find_row_by_label(ws2, label)
             row_in_ws3 = self._find_row_by_label(ws3, label)
@@ -400,44 +512,153 @@ class SummaryWriter:
             # styled on in the source (a plain yellow fill on the label
             # itself; every other column in that row is unstyled/
             # transparent there). Per an explicit request, the same
-            # column-A VISUAL style (fill/font/border/alignment/
-            # protection) is applied across the WHOLE inserted row here
-            # -- column A through the last used column -- rather than
-            # mirroring each column's own (mostly blank) source style,
-            # so the two new rows read as a single, uniformly
-            # highlighted total row rather than one highlighted cell
-            # followed by unstyled ones.
+            # column-A VISUAL style (fill/font/border/protection) is
+            # applied across the WHOLE inserted row here -- column A
+            # through the last used column -- rather than mirroring
+            # each column's own (mostly blank) source style, so the two
+            # new rows read as a single, uniformly highlighted total
+            # row rather than one highlighted cell followed by unstyled
+            # ones.
             #
-            # NUMBER FORMAT is deliberately excluded from that uniform
-            # copy: column A's own format is "General" (it holds a text
-            # label), and this row's other cells are freshly-reserved
-            # placeholders that have never had a format of their own
-            # set (see `_build_monthly_sheet`, which only ever touches
-            # column A when reserving this row) -- so "leave the
-            # existing format alone" would just mean every numeric
-            # column stays "General" too, losing its $/%% display
-            # entirely. Instead, each column's format is taken from the
-            # SUBTOTAL row immediately above (`dest_row - 1`) -- by
-            # construction always "Subtotal : Staffing- Secured" for
-            # "TOTAL Secured" and the sheet's last subtotal for "TOTAL
-            # Prospecting" -- which already carries the correct,
-            # column-specific currency/percentage/plain-number format
-            # for every column, since it's a normal, fully-built
-            # subtotal row.
+            # ALIGNMENT and NUMBER FORMAT are deliberately excluded from
+            # that uniform copy: column A's own alignment is "center"
+            # (correct for a text label, but wrong for a currency
+            # value, which needs to stay right-aligned like every
+            # other number on the sheet -- applying it uniformly was a
+            # real bug: it centered numbers that should be
+            # right-aligned, visually mismatching the subtotal row
+            # directly above). This row's cells are also
+            # freshly-reserved placeholders that have never had their
+            # own alignment/format set (see `_build_monthly_sheet`,
+            # which only ever touches column A when reserving this
+            # row) -- so both are instead taken from the SUBTOTAL row
+            # immediately above (`dest_row - 1`) -- by construction
+            # always "Subtotal : Staffing- Secured" for "TOTAL Secured"
+            # and the sheet's last subtotal for "TOTAL Prospecting" --
+            # which already carries the correct, column-specific
+            # alignment (left for labels, right for currency/numbers)
+            # and number format (currency/percentage/plain) for every
+            # column, since it's a normal, fully-built subtotal row.
             style_cell = ws3.cell(row=style_source_row, column=1)
             format_source_row = dest_row - 1
-            for col in range(1, ws3.max_column + 1):
+
+            # Visual styling + alignment + number format: applied to
+            # EVERY column Worksheet 2 actually has (not Sheet 3's
+            # column count), independent of whether a value gets
+            # copied into it -- e.g. "Comments" has no Sheet-3
+            # equivalent at all and stays blank, but still needs to be
+            # part of the uniformly-highlighted row.
+            for col in range(1, ws2.max_column + 1):
                 dest_cell = ws2.cell(row=dest_row, column=col)
-                dest_cell.value = source_values_ws.cell(
-                    row=row_in_ws3, column=_original_column(col),
-                ).value
+                format_source_cell = ws2.cell(row=format_source_row, column=col)
                 if style_cell.has_style:
-                    dest_cell.font = copy(style_cell.font)
+                    # FONT is deliberately NOT copied from `style_cell`
+                    # (Sheet 3): Sheet 3 is a verbatim copy of the
+                    # Master workbook, which uses Arial 8 as its own
+                    # base font, while every other cell on Worksheet 2
+                    # uses this app's own Calibri -- copying Sheet 3's
+                    # font wholesale silently introduced a real font
+                    # mismatch (this exact row rendering in Arial 8
+                    # while its own subtotal row directly above uses
+                    # Calibri 10). The subtotal row's own font is
+                    # already bold and already in Worksheet 2's correct
+                    # font family/size, so it's used here instead --
+                    # fill/border/protection still come from Sheet 3,
+                    # since that's specifically what gives this row its
+                    # distinctive yellow highlight.
+                    dest_cell.font = copy(format_source_cell.font)
                     dest_cell.fill = copy(style_cell.fill)
                     dest_cell.border = copy(style_cell.border)
-                    dest_cell.alignment = copy(style_cell.alignment)
                     dest_cell.protection = copy(style_cell.protection)
-                dest_cell.number_format = ws2.cell(row=format_source_row, column=col).number_format
+                dest_cell.alignment = copy(format_source_cell.alignment)
+                dest_cell.number_format = format_source_cell.number_format
+
+            # VALUES: only for logical keys BOTH sheets actually have a
+            # column for (e.g. Sheet 3's Salary_$600 columns and
+            # Worksheet 2's Comments column each have no counterpart on
+            # the other side, and are correctly left untouched here).
+            for logical_key, dest_col in dest_col_map.items():
+                src_col = source_col_map.get(logical_key)
+                if src_col is None:
+                    continue
+                ws2.cell(row=dest_row, column=dest_col).value = source_values_ws.cell(
+                    row=row_in_ws3, column=_original_column(src_col),
+                ).value
+
+    def autofit_worksheets(self, wb: Workbook, worksheet1_name: str, worksheet2_name: str) -> None:
+        """Size every column on Worksheets 1 and 2 to fit the widest
+        VISIBLE content actually in it -- the same shared algorithm
+        Sheet 3 already uses (see column_autofit.py), so all three
+        sheets in the generated workbook look consistently, cleanly
+        sized instead of Sheet 3 auto-fitting while Sheets 1/2 use
+        fixed, hardcoded widths regardless of what's actually in them.
+
+        The Comments column (found by its own header text on each
+        sheet, never a fixed column index) is allowed a wider maximum
+        than other columns -- see `column_autofit.MAX_COMMENTS_COLUMN_WIDTH`
+        -- so wrapped comment text has more room per line and needs
+        fewer lines. Row heights are never touched here or anywhere
+        else in this pipeline, so every row stays the same, uniform
+        height regardless of column width or comment length.
+
+        Must run LAST -- after `build()` and, in particular, after
+        `apply_cross_sheet_total_rows` -- so the "TOTAL Secured"/"TOTAL
+        Prospecting" rows' own values are already in place and get
+        accounted for when sizing columns, not sized before they exist.
+
+        Formula cells (e.g. every Subtotal/Total row's `=SUM(...)`) are
+        measured by their already-computed result via
+        `self._formula_cache` (the same list
+        `patch_cached_formula_values` reads after `wb.save(...)`),
+        never their raw formula text -- otherwise a short formula like
+        "=SUM(D6:D33)" would be measured instead of the actual number
+        it displays.
+        """
+        formula_cache_lookup: Dict[Tuple[str, str], float] = {
+            (sheet_name, coordinate): value
+            for sheet_name, coordinate, value in self._formula_cache
+        }
+
+        for sheet_name in (worksheet1_name, worksheet2_name):
+            ws = wb[sheet_name]
+
+            def _measured_value(cell, _sheet_name=sheet_name):
+                value = cell.value
+                if isinstance(value, str) and value.startswith("="):
+                    return formula_cache_lookup.get((_sheet_name, cell.coordinate), value)
+                return value
+
+            # The Comments column gets a wider maximum than other
+            # columns (found by its own header text, never a fixed
+            # column index) -- more horizontal room means wrapped
+            # comment text needs fewer lines, which is what keeps every
+            # row the same height instead of growing to fit a long
+            # comment.
+            comments_col = self._find_header_column(ws, "Comments")
+            column_max_width = {comments_col: column_autofit.MAX_COMMENTS_COLUMN_WIDTH} if comments_col else None
+
+            column_autofit.autofit_worksheet_columns(ws, _measured_value, column_max_width=column_max_width)
+            # Row height is deliberately never touched here: comment
+            # cells don't use wrap_text (see _write_group_row /
+            # _build_monthly_sheet), so nothing ever triggers Excel's
+            # own auto-expand-row-to-fit-wrapped-text behavior, and
+            # every row naturally stays at the sheet's default height
+            # without needing to force it explicitly.
+
+    @staticmethod
+    def _find_header_column(ws: Worksheet, header_text: str) -> Optional[int]:
+        """Return the 1-based column index of the first header cell
+        (scanning rows 1-3, covering every header layout this app
+        produces) whose text matches `header_text` (case-insensitive),
+        or None if not found -- never a fixed/hardcoded column index.
+        """
+        target = header_text.strip().lower()
+        for row in range(1, 4):
+            for col in range(1, ws.max_column + 1):
+                value = ws.cell(row=row, column=col).value
+                if value is not None and str(value).strip().lower() == target:
+                    return col
+        return None
 
     @staticmethod
     def _find_row_by_label(ws: Worksheet, label: str) -> Optional[int]:
@@ -669,12 +890,20 @@ class SummaryWriter:
 
         if group.comment:  # Rule 6: comment blanks stay blank
             c = ws.cell(row=row, column=self.col_comments, value=group.comment)
-            # `wrap_text` deliberately left off here, matching the
-            # manually-built template's own Comments-column cells
-            # (verified: `vertical="top"` only, `wrapText` unset) --
-            # turning it on is what makes Excel auto-expand a row's
-            # height to fit a long comment, so a row's height would
-            # vary with comment length instead of staying uniform.
+            # `wrap_text` is deliberately left off here: turning it on
+            # is what makes Excel auto-expand a row's height to fit a
+            # long comment (Excel's own built-in behavior for any
+            # wrap_text cell whose row height isn't explicitly fixed --
+            # not something this app requests), which is exactly what
+            # made rows non-uniform when this was tried. Without it, a
+            # comment's full text still always displays -- Excel simply
+            # extends it visually rightward into the empty cells beyond
+            # the Comments column (the last column on this sheet, so
+            # nothing else is ever obscured) rather than wrapping -- and
+            # every row naturally stays the same, default height. The
+            # Comments column is still made wider than other columns
+            # (see column_autofit.MAX_COMMENTS_COLUMN_WIDTH) precisely
+            # so more of a comment's text fits before that happens.
             c.alignment = Alignment(vertical="top")
 
     def _write_subtotal_row(self, ws: Worksheet, row: int, label: str, data_start: int, data_end: int) -> None:
@@ -702,11 +931,14 @@ class SummaryWriter:
             for row in range(4, last_row + 1):
                 ws.cell(row=row, column=col).number_format = config.CURRENCY_FORMAT
 
-        ws.column_dimensions[get_column_letter(self.col_name)].width = config.NAME_COLUMN_WIDTH
-        ws.column_dimensions[get_column_letter(self.col_poc)].width = config.POC_COLUMN_WIDTH
-        for col in self.numeric_cols:
-            ws.column_dimensions[get_column_letter(col)].width = config.NUMBER_COLUMN_WIDTH
-        ws.column_dimensions[get_column_letter(self.col_comments)].width = config.COMMENTS_COLUMN_WIDTH
+        # Column widths are no longer set here at all -- they're sized
+        # to actual content afterward, once the whole workbook (all
+        # three sheets) is complete, by
+        # `SummaryWriter.autofit_worksheets` (see main.py/gui/runner.py)
+        # -- any width assigned at this earlier point would just be
+        # overwritten anyway, and fixed per-column-role widths like
+        # these don't adapt if a future workbook's data is longer or
+        # shorter than what this app was built against.
 
         ws.freeze_panes = "A4"
         ws.sheet_view.showGridLines = False
@@ -897,12 +1129,31 @@ class SummaryWriter:
                 ws2.cell(row=current_row, column=col_margin).fill = margin_fill
 
                 if g.confidence:
-                    ws2.cell(row=current_row, column=col_confidence, value=g.confidence)
+                    conf_cell = ws2.cell(row=current_row, column=col_confidence, value=g.confidence)
+                    # `g.confidence` is a percentage-like STRING (e.g.
+                    # "100%"), so it defaults to Excel's left-aligned
+                    # text behavior with no alignment set at all --
+                    # visually inconsistent with the right-aligned
+                    # numeric columns around it. Centered instead,
+                    # matching its own (already-centered) header and
+                    # the short, uniform-width values it holds.
+                    conf_cell.alignment = Alignment(horizontal="center", vertical="center")
                 if g.comment:
                     c = ws2.cell(row=current_row, column=col_comments, value=g.comment)
-                    # Same reasoning as Worksheet 1's comment cells: no
-                    # `wrap_text`, matching the template, so row height
-                    # doesn't vary with comment length.
+                    # Same as Worksheet 1's comment cells: `wrap_text`
+                    # deliberately left off, since turning it on is
+                    # what makes Excel auto-expand a row's height to
+                    # fit a long comment -- exactly what made rows
+                    # non-uniform when this was tried. A comment's full
+                    # text still always displays, just extending
+                    # visually rightward into the empty cells beyond
+                    # (the Comments column is the last column on this
+                    # sheet too) instead of wrapping, and every row
+                    # naturally stays the same, default height. The
+                    # Comments column is still made wider than other
+                    # columns (see column_autofit.MAX_COMMENTS_COLUMN_WIDTH)
+                    # so more of a comment's text fits before that
+                    # happens.
                     c.alignment = Alignment(vertical="top")
                 current_row += 1
             data_end = current_row - 1
@@ -977,12 +1228,10 @@ class SummaryWriter:
             for row in range(3, last_row + 1):
                 ws2.cell(row=row, column=col).number_format = config.CURRENCY_FORMAT
 
-        ws2.column_dimensions[get_column_letter(col_name)].width = config.NAME_COLUMN_WIDTH
-        ws2.column_dimensions[get_column_letter(col_poc)].width = config.POC_COLUMN_WIDTH
-        for col in numeric_cols:
-            ws2.column_dimensions[get_column_letter(col)].width = config.NUMBER_COLUMN_WIDTH
-        ws2.column_dimensions[get_column_letter(col_confidence)].width = config.CONFIDENCE_COLUMN_WIDTH
-        ws2.column_dimensions[get_column_letter(col_comments)].width = config.COMMENTS_COLUMN_WIDTH
+        # Column widths are no longer set here at all -- see the same
+        # note on Worksheet 1's build step above; sizing happens once,
+        # after the whole workbook is complete, via
+        # `SummaryWriter.autofit_worksheets`.
 
         ws2.freeze_panes = "A3"
         ws2.sheet_view.showGridLines = False

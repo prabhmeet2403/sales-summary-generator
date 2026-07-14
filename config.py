@@ -15,7 +15,7 @@ renamed, this is the only file that should need a one-line edit.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -289,8 +289,7 @@ TOTAL_MARGIN_HEADER_FILL = "FFFFFF00"
 TOTAL_DATA_FILL = "FFB4E5A2"
 MARGIN_DATA_FILL = "FFF6C6AD"
 BORDER_COLOR = "FF000000"  # thin black border applied to every populated cell
-COMMENTS_COLUMN_WIDTH = 70
-NAME_COLUMN_WIDTH = 24
-POC_COLUMN_WIDTH = 15
-NUMBER_COLUMN_WIDTH = 11
-CONFIDENCE_COLUMN_WIDTH = 12  # Worksheet 2's "Confidence" column (e.g. "100%")
+# Column widths are no longer configured as fixed constants here --
+# Worksheets 1/2/3 are all sized to their actual content, after the
+# whole workbook is built, by column_autofit.py (see
+# SummaryWriter.autofit_worksheets in main.py/gui/runner.py).

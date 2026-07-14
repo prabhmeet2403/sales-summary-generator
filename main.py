@@ -226,18 +226,14 @@ def main(argv=None) -> int:
         writer = SummaryWriter(target_year, prior_years, years_with_margin)
         month_roles = resolve_month_roles(ws_main, cmap)
         # Worksheet 2 gets the combined (Worksheet 1 + Projection) monthly
-        # view. `monthly_section_results` -- what gets attached to
-        # GenerationResult below, and from there is the only thing the
-        # AI layer (ai/context.py) ever reads -- stays sliced to exactly
-        # Worksheet 1's own sections, so the AI's view of the data is
-        # completely unaffected by Worksheet 2's Projection sections
-        # (same rows, same order, same objects; slicing rather than a
-        # second `build_monthly_sections` call avoids computing anything
-        # twice).
+        # view. Unlike gui/runner.py's GenerationResult (which the AI
+        # layer reads from), this CLI tool's ValidationReport has no
+        # slot for the monthly section data at all, so there's nothing
+        # to slice/attach here -- `writer.build()` just needs the full,
+        # combined result.
         worksheet2_monthly_section_results = build_monthly_sections(
             rows, cmap, ws_main, section_results + worksheet2_extra_section_results,
         )
-        monthly_section_results = worksheet2_monthly_section_results[:len(section_results)]
         wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles)
 
         # Worksheet 2/3's names in the GENERATED workbook (Worksheet 1
@@ -256,6 +252,18 @@ def main(argv=None) -> int:
         writer.apply_cross_sheet_total_rows(
             wb, worksheet2_name, worksheet3_name, main_sheet_name, str(input_path), cmap.comments,
         )
+        # Sized last, once every sheet's final content (including the
+        # TOTAL Secured/Prospecting rows just filled in above) is in
+        # place -- Worksheet 1 is looked up by position (its own title
+        # is a fixed constant, not year-based -- see
+        # SummaryWriter.build()), never hardcoded here.
+        writer.autofit_worksheets(wb, wb.sheetnames[0], worksheet2_name)
+        # Row heights are deliberately left alone here (Excel's own
+        # default for every row) -- keeping every row the same,
+        # uniform height regardless of column width or wrapped comment
+        # length was an explicit request; the Comments column is given
+        # extra horizontal room instead (see column_autofit.py) so
+        # wrapped text needs fewer lines rather than growing its row.
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir / output_filename

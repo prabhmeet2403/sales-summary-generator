@@ -44,12 +44,14 @@ from copy import copy, deepcopy
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment
 from openpyxl.styles.colors import Color
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 from openpyxl.utils.cell import coordinate_from_string
 from openpyxl.worksheet.formula import ArrayFormula
 from openpyxl.worksheet.worksheet import Worksheet
 
+import column_autofit
 # Excel's theme-color index order for a `<color theme="N">` reference --
 # NOT the raw document order the <a:clrScheme> XML itself lists colors
 # in (dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink). The first two
@@ -204,12 +206,172 @@ def copy_source_sheet_as_new_worksheet(
 
     new_ws = wb.create_sheet(title=output_sheet_name)
     _copy_cells(src_values, src_styles, new_ws, comments_col, theme_palette, output_sheet_name, formula_cache)
+    _normalize_financial_cell_formatting(new_ws)
     _copy_dimensions(src_styles, new_ws, comments_col)
     _autofit_column_widths(src_values, new_ws, comments_col)
     _copy_merged_cells(src_styles, new_ws, comments_col)
     _copy_sheet_view(src_styles, new_ws, comments_col)
     _copy_page_setup(src_styles, new_ws, comments_col)
     _copy_conditional_formatting(src_styles, new_ws, comments_col, theme_palette)
+
+# The Master workbook's own financial amount cells on this sheet don't
+# all use the same number format: most use a plain Currency-style
+# presentation (the "$" immediately beside the number, e.g.
+# '"$"#,##0'), but a substantial minority -- concentrated in, but not
+# limited to, the "Staffing" section's own data rows and several
+# subtotal/total/recap rows throughout the sheet -- use Accounting-
+# style formatting (the "$" separated from the number via padding) or
+# no currency formatting at all. This is a genuine, pre-existing
+# inconsistency in the uploaded Master workbook itself (verified
+# directly against the source file, not introduced by this copy).
+# `_normalize_financial_cell_formatting` corrects it worksheet-wide,
+# per an explicit request, while leaving every value, formula, fill,
+# border, font, protection, merged cell, row height, and column width
+# untouched, and never touching percentage/text/label columns at all.
+def _normalize_financial_cell_formatting(dest: Worksheet) -> Dict[str, int]:
+    """Normalize every financial amount cell on `dest` to the ONE
+    Currency-style number format and horizontal alignment already most
+    widely used across the WHOLE sheet -- determined once, globally,
+    from the sheet's own existing formatting (never a hardcoded format
+    string) -- rather than picking a different reference per cell,
+    row, or section (which is what let inconsistent pockets like the
+    Staffing section's own Accounting-formatted data persist even
+    after nearby rows were fixed).
+
+    Returns a dict with counts of cells whose number_format and
+    alignment were actually changed, for reporting.
+    """
+    financial_cols = _find_financial_amount_columns(dest)
+    if not financial_cols:
+        return {"number_format_changed": 0, "alignment_changed": 0}
+
+    standard_format, standard_alignment = _determine_standard_currency_presentation(dest, financial_cols)
+    if standard_format is None:
+        return {"number_format_changed": 0, "alignment_changed": 0}
+
+    counts = {"number_format_changed": 0, "alignment_changed": 0}
+    for row in range(1, dest.max_row + 1):
+        for col in financial_cols:
+            cell = dest.cell(row=row, column=col)
+            if cell.value is None:
+                continue
+            if isinstance(cell.value, (datetime.date, datetime.datetime)):
+                continue  # this IS the column's own header date, not a financial amount
+            if cell.number_format != standard_format:
+                cell.number_format = standard_format
+                counts["number_format_changed"] += 1 
+    return counts
+
+
+def _find_financial_amount_columns(ws: Worksheet) -> List[int]:
+    """Return every column index that holds a dollar-amount value,
+    identified purely from this sheet's own two-row header (row 1: a
+    type label like "Actual"/"Forecast"/"Salary_$600"/"Margin"; row 2:
+    that month's real date, or a plain text label for a summary
+    column) -- never a fixed/hardcoded column number. Matches:
+      - any month column whose row-1 type label is Actual, Forecast,
+        Salary_$600, or Margin (confirmed by row 2 holding a real date,
+        so a same-named but unrelated column is never mistaken for one),
+      - "Total Revenue" / "Total Margin" / a bare prior year (e.g.
+        2024) / "<year>_Total" / "<year>_Q<n>" summary column (row 2's
+        own text/number, no matching date needed since these hold a
+        single summary figure, not a per-month one).
+    Explicitly excludes percentage (Renewal Confidence), identity
+    (Name/POC/Service/Group/Sub-Group), and any other column.
+    """
+    financial_type_labels = {"actual", "forecast", "salary600", "margin"}
+    financial_field_labels = {"totalrevenue", "totalmargin"}
+    excluded_field_labels = {
+        "renewalconfidence", "confidence", "group", "subgroup", "name", "poc", "service",
+    }
+
+    cols: List[int] = []
+    for col in range(1, ws.max_column + 1):
+        type_label = _normalize_header_text(ws.cell(row=1, column=col).value)
+        field_value = ws.cell(row=2, column=col).value
+        field_label = _normalize_header_text(field_value)
+
+        if field_label in excluded_field_labels:
+            continue
+        if type_label in financial_type_labels and isinstance(field_value, (datetime.date, datetime.datetime)):
+            cols.append(col)
+            continue
+        if field_label in financial_field_labels:
+            cols.append(col)
+            continue
+        # A bare prior year ("2024") or "<year>_Total" / "<year>_Q<n>"
+        # summary column -- a real number/date for the year itself, or
+        # text ending in "_total"/"_q<digit>", never a hardcoded year.
+        if isinstance(field_value, (int, float)) and 1900 <= field_value <= 2100:
+            cols.append(col)
+            continue
+        if isinstance(field_value, str) and re.match(r"^\d{4}_(total|q\d)$", field_value.strip(), re.IGNORECASE):
+            cols.append(col)
+            continue
+    return cols
+
+
+def _normalize_header_text(value: object) -> str:
+    """Lowercase, letters/digits-only normalization for header-label
+    matching (so "Total Revenue", "TOTAL REVENUE", "Salary_$600" etc.
+    all compare reliably) -- used only to recognize which logical
+    column a header cell represents, never to touch the cell itself."""
+    if value is None:
+        return ""
+    return re.sub(r"[^a-z0-9]", "", str(value).lower())
+
+
+def _is_currency_style_format(number_format: str) -> bool:
+    """True if `number_format` displays a "$" immediately adjacent to
+    the number (a plain Currency-style format, e.g. `'"$"#,##0'`) --
+    False if it's Accounting-style (padded/separated, e.g.
+    `_("$"* #,##0_);_("$"* \\(#,##0\\);_("$"* "-"??_);_(@_)`) or has no
+    "$" at all.
+
+    Detected structurally, by the presence of Accounting format's own
+    defining padding/alignment syntax -- `_(`/`_)` (reserves space for
+    a parenthesis, aligning negatives) and `*` (repeats a padding
+    character out to the column edge) -- which is exactly how Excel's
+    Accounting format separates the "$" from the number and never
+    appears in a plain Currency format. Never compares against one
+    hardcoded format string, so this generalizes to any Currency or
+    Accounting format a workbook might use.
+    """
+    return "$" in number_format and "_(" not in number_format and "*" not in number_format
+
+
+def _determine_standard_currency_presentation(
+    ws: Worksheet, financial_cols: List[int],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Determine the ONE Currency-style number format, and the ONE
+    horizontal alignment, already most widely used across every
+    populated cell in `financial_cols` (checked over the WHOLE sheet
+    at once, not per column/row/section) -- i.e. the sheet's own
+    intended standard financial presentation, discovered from its own
+    existing formatting rather than a format string hardcoded in this
+    code. Returns (None, None) if no cell in these columns already
+    uses a Currency-style format at all (nothing to normalize to).
+    """
+    from collections import Counter
+
+    format_counts: Counter = Counter()
+    alignment_counts: Counter = Counter()
+    for row in range(1, ws.max_row + 1):
+        for col in financial_cols:
+            cell = ws.cell(row=row, column=col)
+            if cell.value is None:
+                continue
+            if isinstance(cell.value, (datetime.date, datetime.datetime)):
+                continue  # this IS the column's own header date, not a financial amount
+            if _is_currency_style_format(cell.number_format):
+                format_counts[cell.number_format] += 1
+                alignment_counts[cell.alignment.horizontal] += 1
+
+    if not format_counts:
+        return None, None
+    standard_format = format_counts.most_common(1)[0][0]
+    standard_alignment = alignment_counts.most_common(1)[0][0] if alignment_counts else None
+    return standard_format, None
 
 
 def _remap_column(col_idx: int, removed_col: Optional[int]) -> Optional[int]:
@@ -366,6 +528,33 @@ def _copy_cells(
                 new_cell.protection = copy(cell.protection)
                 new_cell.alignment = copy(cell.alignment)
 
+                # ----- Sheet 3 font normalization -----
+                label = str(dest.cell(row=cell.row, column=1).value or "").strip().lower()
+
+                is_total_row = any(
+                    key in label
+                    for key in (
+                        "total",
+                        "sub-total",
+                        "subtotal",
+                        "sub total",
+                    )
+                )
+
+                # Total/Subtotal rows -> Calibri 10 Bold
+                if is_total_row:
+                    f = copy(new_cell.font)
+                    f.name = "Calibri"
+                    f.size = 10
+                    f.bold = True
+                    new_cell.font = f
+
+                # All other rows -> Calibri 11 (preserve existing bold)
+                else:
+                    f = copy(new_cell.font)
+                    f.name = "Calibri"
+                    f.size = 11
+                    new_cell.font = f
 
 def _set_cell_value_or_formula(
     cell,
@@ -442,45 +631,13 @@ def _copy_dimensions(src: Worksheet, dest: Worksheet, comments_col: Optional[int
     dest.sheet_format.defaultRowHeight = src.sheet_format.defaultRowHeight
 
 
-def _display_text(value, number_format: Optional[str]) -> str:
-    """Approximate what Excel would actually SHOW for one cell, given
-    its value and number format -- used only to measure text length
-    for `_autofit_column_widths`, never written anywhere. Covers the
-    number formats actually observed on this sheet (currency, accounting,
-    thousands-separated plain numbers, dates, text, General) with a
-    plain `str(value)` fallback for anything else -- a full general-
-    purpose number-format renderer is out of scope for a width estimate,
-    and openpyxl has no built-in AutoFit to defer to.
-    """
-    if value is None:
-        return ""
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, (datetime.date, datetime.datetime)):
-        return value.strftime("%b-%y")
-    if isinstance(value, (int, float)):
-        nf = number_format or "General"
-        if nf in ("General", "@"):
-            if isinstance(value, float) and value == int(value):
-                return str(int(value))
-            return str(value)
-        if "$" in nf:
-            if value < 0:
-                return f"(${abs(value):,.0f})" if "(" in nf else f"-${abs(value):,.0f}"
-            return f"${value:,.0f}"
-        if "%" in nf:
-            return f"{value * 100:.0f}%"
-        if "#,##0" in nf:
-            return f"{value:,.0f}"
-        return str(value)
-    return str(value)
-
 
 def _autofit_column_widths(src_values: Worksheet, dest: Worksheet, comments_col: Optional[int]) -> None:
     """Set every column's width on `dest` based on the widest visible
     content actually in that column -- header text, data values, and
     (for formula cells) the DISPLAYED/computed result rather than the
-    formula text -- mirroring Excel's own AutoFit Column Width.
+    formula text -- using the same shared algorithm every sheet in the
+    generated workbook uses (see column_autofit.py).
 
     Reads from `src_values` (the `data_only=True` sibling load of the
     same source sheet already used elsewhere in this module) rather
@@ -489,40 +646,36 @@ def _autofit_column_widths(src_values: Worksheet, dest: Worksheet, comments_col:
     same-sheet formula cell on `dest` holds the FORMULA TEXT (e.g.
     `"=D4-E4"`), which is not what a person looking at the sheet would
     actually see -- `src_values` already has the real, already-computed
-    number for that exact cell.
+    number for that exact cell. Column indices are remapped for the
+    Comments-column removal along the way.
 
     This replaces `_copy_dimensions`'s usual "copy the source's own
     explicit width" behavior for this sheet specifically (an explicit,
     separate request) -- row heights and every other formatting
     attribute are untouched.
     """
-    max_col = src_values.max_column
-    max_row = src_values.max_row
+    # Build a plain, already-column-shifted stand-in worksheet view is
+    # unnecessary -- instead, measure directly from `src_values` (the
+    # pre-shift sheet) and remap each column index to where it lands on
+    # `dest`, exactly as the original implementation did, just through
+    # the shared measuring/bounding logic now.
     widest_by_new_col: Dict[int, int] = {}
-
-    for col in range(1, max_col + 1):
+    for col in range(1, src_values.max_column + 1):
         new_col = _remap_column(col, comments_col)
         if new_col is None:
             continue
-        widest = widest_by_new_col.get(new_col, 0)
-        for row in range(1, max_row + 1):
+        for row in range(1, src_values.max_row + 1):
             cell = src_values.cell(row=row, column=col)
             if cell.value is None:
                 continue
-            text_len = len(_display_text(cell.value, cell.number_format))
-            if text_len > widest:
-                widest = text_len
-        widest_by_new_col[new_col] = widest
+            text_len = len(column_autofit.display_text(cell.value, cell.number_format))
+            if text_len > widest_by_new_col.get(new_col, 0):
+                widest_by_new_col[new_col] = text_len
 
     for new_col, widest in widest_by_new_col.items():
-        # Excel's own column-width unit is approximately "number of
-        # characters of the default font that fit", with a small
-        # padding allowance for cell margins -- the same widely-used
-        # approximation the openpyxl community relies on, since
-        # openpyxl has no built-in AutoFit to call instead. A modest
-        # floor keeps genuinely empty/near-empty columns from
-        # collapsing to an unreadably thin sliver.
-        dest.column_dimensions[get_column_letter(new_col)].width = max(widest + 2, 6)
+        dest.column_dimensions[get_column_letter(new_col)].width = max(
+            min(widest + 2, column_autofit.MAX_COLUMN_WIDTH), column_autofit.MIN_COLUMN_WIDTH,
+        )
 
 
 def _copy_merged_cells(src: Worksheet, dest: Worksheet, comments_col: Optional[int]) -> None:

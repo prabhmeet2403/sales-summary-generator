@@ -118,10 +118,10 @@ def main() -> int:
             problems.append(f"Column(s) with no width set at all (auto-fit did not run): {no_width_set[:10]}")
 
         too_narrow = []
-        from sheet_copy import _display_text
+        from column_autofit import display_text
         for col in range(1, new_f.max_column + 1):
             header_cell = new_f.cell(row=cmap.field_header_row, column=col)
-            header_text = _display_text(header_cell.value, header_cell.number_format)
+            header_text = display_text(header_cell.value, header_cell.number_format)
             width = new_f.column_dimensions[get_column_letter(col)].width
             if header_text and width is not None and width < len(header_text):
                 too_narrow.append(get_column_letter(col))

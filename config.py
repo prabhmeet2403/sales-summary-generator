@@ -151,8 +151,8 @@ OUTPUT_SECTIONS: List[OutputSection] = [
 #
 # These are deliberately kept OUT of `OUTPUT_SECTIONS` above -- per an
 # explicit, confirmed business rule, the Projection blocks belong ONLY on
-# the "<year> Actual & Forecast" worksheet (Worksheet 2), not on the
-# yearly "<year>" summary (Worksheet 1). `main.py`/`gui/runner.py`
+# the "<year> Monthly Performance" worksheet (Worksheet 2), not on the
+# "Multi-Year Revenue & Margin" summary (Worksheet 1). `main.py`/`gui/runner.py`
 # aggregate this list with the exact same `aggregate_section` mechanism
 # `OUTPUT_SECTIONS` uses, then combine the two sets of results only when
 # building Worksheet 2's monthly view -- Worksheet 1 is built from

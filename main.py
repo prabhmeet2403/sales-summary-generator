@@ -107,15 +107,20 @@ def main(argv=None) -> int:
         master = MasterWorkbook(str(input_path))
         report.workbook_loaded = True
 
+        # The DEFAULT business year (used when no explicit --year is
+        # given) is read from the main sheet's own header content --
+        # its month/date columns -- never parsed out of any sheet's
+        # name. `available_years` (sheet-name-derived) is kept only for
+        # populating an explicit --year override's set of valid choices
+        # and for reporting; it no longer determines the default.
         available_years = master.available_years()
-        if not available_years:
-            raise SheetNotFoundError(
-                "No sheet matching 'Sales by Customer- <year>' was found in the "
-                f"workbook. Available sheets: {', '.join(master.wb.sheetnames)}"
-            )
-        target_year = args.year or max(available_years)
+        default_year = master.detect_business_year_from_content()
+        target_year = args.year or default_year
         report.target_year = target_year
-        logger.info("Target year resolved to %s (years available: %s)", target_year, available_years)
+        logger.info(
+            "Target year resolved to %s (from main sheet's own header content; "
+            "years available by sheet name: %s)", target_year, available_years,
+        )
 
         main_sheet_name = master.main_sheet_name(target_year)
         report.main_sheet = main_sheet_name
@@ -235,7 +240,22 @@ def main(argv=None) -> int:
         monthly_section_results = worksheet2_monthly_section_results[:len(section_results)]
         wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles)
 
-        copy_source_sheet_as_new_worksheet(wb, str(input_path), main_sheet_name, cmap.comments, writer._formula_cache)
+        # Worksheet 2/3's names in the GENERATED workbook (Worksheet 1
+        # is named by `writer.build()` itself, unaffected by the target
+        # year -- see summary_writer.py). `main_sheet_name` remains the
+        # ORIGINAL Master workbook's own sheet name (e.g. "Sales by
+        # Customer- <year>") -- used only to find the right sheet to
+        # copy FROM; it is not the generated workbook's own title for
+        # that sheet any more.
+        worksheet2_name = f"{target_year} Monthly Performance"
+        worksheet3_name = f"{target_year} SOW Performance"
+        copy_source_sheet_as_new_worksheet(
+            wb, str(input_path), main_sheet_name, cmap.comments, writer._formula_cache,
+            output_sheet_name=worksheet3_name,
+        )
+        writer.apply_cross_sheet_total_rows(
+            wb, worksheet2_name, worksheet3_name, main_sheet_name, str(input_path), cmap.comments,
+        )
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir / output_filename

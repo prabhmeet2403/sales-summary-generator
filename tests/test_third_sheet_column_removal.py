@@ -28,7 +28,8 @@ from excel_reader import build_column_map  # noqa: E402
 from gui.runner import generate_summary  # noqa: E402
 
 FIXTURE_MASTER = Path(__file__).resolve().parent / "fixtures" / "master_2026.xlsx"
-SOURCE_SHEET_NAME = "Sales by Customer- 2026"
+SOURCE_SHEET_NAME = "Sales by Customer- 2026"  # the FIXTURE's own sheet name (unaffected by Change 6's rename)
+OUTPUT_SHEET3_NAME = "2026 SOW Performance"  # the GENERATED workbook's Sheet 3 title
 
 
 def main() -> int:
@@ -46,17 +47,18 @@ def main() -> int:
         out_f = openpyxl.load_workbook(result.output_path, data_only=False)
         out_v = openpyxl.load_workbook(result.output_path, data_only=True)
 
-        if out_f.sheetnames != ["2026", "2026 Actual & Forecast", SOURCE_SHEET_NAME]:
-            problems.append(f"Unexpected sheet name/order: {out_f.sheetnames}")
+        expected_sheets = ["Multi-Year Revenue & Margin", "2026 Monthly Performance", OUTPUT_SHEET3_NAME]
+        if out_f.sheetnames != expected_sheets:
+            problems.append(f"Unexpected sheet name/order: {out_f.sheetnames}, expected {expected_sheets}")
 
-        if SOURCE_SHEET_NAME not in out_f.sheetnames:
-            print(f"FAIL - '{SOURCE_SHEET_NAME}' sheet missing entirely.")
+        if OUTPUT_SHEET3_NAME not in out_f.sheetnames:
+            print(f"FAIL - '{OUTPUT_SHEET3_NAME}' sheet missing entirely.")
             return 1
 
         src_f = openpyxl.load_workbook(str(FIXTURE_MASTER), data_only=False)[SOURCE_SHEET_NAME]
         src_v = openpyxl.load_workbook(str(FIXTURE_MASTER), data_only=True)[SOURCE_SHEET_NAME]
-        new_f = out_f[SOURCE_SHEET_NAME]
-        new_v = out_v[SOURCE_SHEET_NAME]
+        new_f = out_f[OUTPUT_SHEET3_NAME]
+        new_v = out_v[OUTPUT_SHEET3_NAME]
         cmap = build_column_map(openpyxl.load_workbook(str(FIXTURE_MASTER))[SOURCE_SHEET_NAME])
         comments_col = cmap.comments
 
@@ -100,23 +102,31 @@ def main() -> int:
         if new_f.auto_filter.ref != _shift_ref(src_f.auto_filter.ref):
             problems.append(f"auto_filter.ref not correctly shifted: {src_f.auto_filter.ref!r} -> {new_f.auto_filter.ref!r}")
 
-        src_widths = {}
-        for key, dim in src_f.column_dimensions.items():
-            try:
-                from openpyxl.utils import column_index_from_string
-                idx = column_index_from_string(key)
-            except ValueError:
-                continue
-            if idx == comments_col:
-                continue
-            new_idx = idx if idx < comments_col else idx - 1
-            src_widths[get_column_letter(new_idx)] = dim.width
-        width_mismatches = [
-            k for k, w in src_widths.items()
-            if new_f.column_dimensions[k].width != w
+        # Column widths are auto-fit to content (see
+        # sheet_copy.py's `_autofit_column_widths`) rather than copied
+        # verbatim from the source -- an explicit, separate decision
+        # for this sheet. Verify auto-fit actually ran (every column
+        # has SOME explicit width, not all silently falling back to
+        # openpyxl's bare default of 13) and is at least wide enough
+        # for that column's own header text, rather than asserting an
+        # exact match to the source's original widths.
+        no_width_set = [
+            get_column_letter(c) for c in range(1, new_f.max_column + 1)
+            if new_f.column_dimensions[get_column_letter(c)].width is None
         ]
-        if width_mismatches:
-            problems.append(f"Column width mismatches after shift: {width_mismatches[:10]}")
+        if no_width_set:
+            problems.append(f"Column(s) with no width set at all (auto-fit did not run): {no_width_set[:10]}")
+
+        too_narrow = []
+        from sheet_copy import _display_text
+        for col in range(1, new_f.max_column + 1):
+            header_cell = new_f.cell(row=cmap.field_header_row, column=col)
+            header_text = _display_text(header_cell.value, header_cell.number_format)
+            width = new_f.column_dimensions[get_column_letter(col)].width
+            if header_text and width is not None and width < len(header_text):
+                too_narrow.append(get_column_letter(col))
+        if too_narrow:
+            problems.append(f"Column(s) narrower than their own DISPLAYED header text: {too_narrow[:10]}")
 
         # --- NO CROSS-SHEET formula may remain -- see sheet_copy.py's
         #     module docstring for why: a formula referencing a sheet
@@ -190,7 +200,7 @@ def main() -> int:
                 )
 
         # --- Sheets 1 & 2 unaffected ---
-        for sheet_name in ("2026", "2026 Actual & Forecast"):
+        for sheet_name in ("Multi-Year Revenue & Margin", "2026 Monthly Performance"):
             if sheet_name not in out_f.sheetnames:
                 problems.append(f"Sheet '{sheet_name}' is missing")
 

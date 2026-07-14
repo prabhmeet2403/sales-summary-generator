@@ -1,7 +1,7 @@
 """
 tests/test_worksheet2_actual_forecast.py
 =========================================
-Regression test for Worksheet 2 ("<year> Actual & Forecast"): locks in
+Regression test for Worksheet 2 ("<year> Monthly Performance"): locks in
 that it exists with the correct dynamic name, shows exactly the same
 groups (same names, same order) as the already-validated Worksheet 1,
 detects each month's Actual/Forecast role dynamically from the source
@@ -62,7 +62,7 @@ def main() -> int:
         wb = load_workbook(outputs[0], data_only=False)
 
         # --- Worksheet 2 exists, dynamically named -----------------
-        expected_name = "2026 Actual & Forecast"
+        expected_name = "2026 Monthly Performance"
         if expected_name not in wb.sheetnames:
             problems.append(f"Expected sheet '{expected_name}' not found (sheets: {wb.sheetnames})")
         else:
@@ -74,7 +74,7 @@ def main() -> int:
             #     appended after them -- not an exact mirror of
             #     Worksheet 1 any more, per the explicit business rule
             #     that Projection data appears only on this sheet. -----
-            ws1 = wb["2026"]
+            ws1 = wb["Multi-Year Revenue & Margin"]
             _non_group_titles = (
                 "Solutions and Staff Augmentation (Projects)",
                 "Solutions and Staff Augmentation (Projects) - Track 1",
@@ -134,7 +134,7 @@ def main() -> int:
             sfae_main.main(["--input", str(FIXTURE_MASTER), "--output-dir", str(out_dir2), "--year", "2026"])
             outputs2 = sorted(out_dir2.glob("*.xlsx"))
             wb2 = load_workbook(outputs2[0], data_only=False)
-            ws1_a, ws1_b = wb["2026"], wb2["2026"]
+            ws1_a, ws1_b = wb["Multi-Year Revenue & Margin"], wb2["Multi-Year Revenue & Margin"]
             if ws1_a.max_row != ws1_b.max_row or ws1_a.max_column != ws1_b.max_column:
                 problems.append("Worksheet 1 dimensions are not stable across repeated runs.")
             mismatch = 0

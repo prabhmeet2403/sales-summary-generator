@@ -37,6 +37,7 @@ this code), which carries no formula for Excel to fail to resolve.
 from __future__ import annotations
 
 import colorsys
+import datetime
 import re
 import xml.etree.ElementTree as ET
 from copy import copy, deepcopy
@@ -155,26 +156,29 @@ def copy_source_sheet_as_new_worksheet(
     sheet_name: str,
     comments_col: Optional[int],
     formula_cache: List[Tuple[str, str, float]],
+    output_sheet_name: Optional[str] = None,
 ) -> None:
     """Append `sheet_name` from `source_path` onto `wb` as a new sheet
-    with the exact same name, copying everything needed to make it
-    LOOK identical -- computed cell values or, where safe, live
-    formulas (see module docstring), fonts/fills/borders/number
-    formats/alignment, column widths, row heights, merged cells,
-    freeze panes/split panes/scroll position, autofilter, conditional
-    formatting, print/page setup, and hidden rows/columns -- with one
-    exception: if `comments_col` is given (1-based column index, e.g.
-    `ColumnMap.comments` -- resolved dynamically by header text
-    elsewhere, never hardcoded), that ENTIRE column is removed (not
-    just blanked), and every column after it shifts left by one,
-    exactly like using Excel's own "Delete Column" on the source sheet.
+    (titled `output_sheet_name`, or `sheet_name` itself if not given),
+    copying everything needed to make it LOOK identical -- computed
+    cell values or, where safe, live formulas (see module docstring),
+    fonts/fills/borders/number formats/alignment, column widths, row
+    heights, merged cells, freeze panes/split panes/scroll position,
+    autofilter, conditional formatting, print/page setup, and hidden
+    rows/columns -- with one exception: if `comments_col` is given
+    (1-based column index, e.g. `ColumnMap.comments` -- resolved
+    dynamically by header text elsewhere, never hardcoded), that
+    ENTIRE column is removed (not just blanked), and every column
+    after it shifts left by one, exactly like using Excel's own
+    "Delete Column" on the source sheet.
 
     Args:
         wb: The in-progress output workbook (already has its other
             sheet(s) from `SummaryWriter.build()`) to append to.
         source_path: Path to the uploaded Master workbook.
-        sheet_name: Exact sheet name to copy (becomes the new sheet's
-            name too).
+        sheet_name: Exact sheet name to copy FROM in the source
+            workbook (how the sheet is located there -- unaffected by
+            whatever the new sheet ends up being called).
         comments_col: 1-based column index of the Comments column on
             the SOURCE sheet, or None if it has none (nothing is
             removed in that case).
@@ -183,16 +187,25 @@ def copy_source_sheet_as_new_worksheet(
             so this sheet's preserved same-sheet formulas get a cached
             value through that exact same, already-tested pass, with
             no separate injection step of its own.
+        output_sheet_name: What to title the new sheet in `wb` --
+            defaults to `sheet_name` (mirroring the source's own name)
+            if not given. Kept separate so the OUTPUT workbook's sheet
+            name can differ from the source's own (e.g. renaming this
+            sheet to "<year> SOW Performance" while still reading from
+            the source's "Sales by Customer- <year>" sheet) without
+            affecting which sheet gets read.
     """
+    output_sheet_name = output_sheet_name or sheet_name
     source_wb_values = load_workbook(source_path, data_only=True)
     source_wb_styles = load_workbook(source_path, data_only=False)
     src_values = source_wb_values[sheet_name]
     src_styles = source_wb_styles[sheet_name]
     theme_palette = _parse_theme_palette(source_wb_styles.loaded_theme)
 
-    new_ws = wb.create_sheet(title=sheet_name)
-    _copy_cells(src_values, src_styles, new_ws, comments_col, theme_palette, sheet_name, formula_cache)
+    new_ws = wb.create_sheet(title=output_sheet_name)
+    _copy_cells(src_values, src_styles, new_ws, comments_col, theme_palette, output_sheet_name, formula_cache)
     _copy_dimensions(src_styles, new_ws, comments_col)
+    _autofit_column_widths(src_values, new_ws, comments_col)
     _copy_merged_cells(src_styles, new_ws, comments_col)
     _copy_sheet_view(src_styles, new_ws, comments_col)
     _copy_page_setup(src_styles, new_ws, comments_col)
@@ -411,7 +424,10 @@ def _copy_dimensions(src: Worksheet, dest: Worksheet, comments_col: Optional[int
         if new_idx is None:
             continue  # the removed Comments column's own dimension
         new_dim = dest.column_dimensions[get_column_letter(new_idx)]
-        new_dim.width = dim.width
+        # width is deliberately NOT copied here -- see
+        # `_autofit_column_widths`, called separately after this, which
+        # sets it based on actual cell content instead (an explicit,
+        # separate request for this sheet specifically).
         new_dim.hidden = dim.hidden
         new_dim.outline_level = dim.outline_level
         new_dim.bestFit = dim.bestFit
@@ -424,6 +440,89 @@ def _copy_dimensions(src: Worksheet, dest: Worksheet, comments_col: Optional[int
 
     dest.sheet_format.defaultColWidth = src.sheet_format.defaultColWidth
     dest.sheet_format.defaultRowHeight = src.sheet_format.defaultRowHeight
+
+
+def _display_text(value, number_format: Optional[str]) -> str:
+    """Approximate what Excel would actually SHOW for one cell, given
+    its value and number format -- used only to measure text length
+    for `_autofit_column_widths`, never written anywhere. Covers the
+    number formats actually observed on this sheet (currency, accounting,
+    thousands-separated plain numbers, dates, text, General) with a
+    plain `str(value)` fallback for anything else -- a full general-
+    purpose number-format renderer is out of scope for a width estimate,
+    and openpyxl has no built-in AutoFit to defer to.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return value.strftime("%b-%y")
+    if isinstance(value, (int, float)):
+        nf = number_format or "General"
+        if nf in ("General", "@"):
+            if isinstance(value, float) and value == int(value):
+                return str(int(value))
+            return str(value)
+        if "$" in nf:
+            if value < 0:
+                return f"(${abs(value):,.0f})" if "(" in nf else f"-${abs(value):,.0f}"
+            return f"${value:,.0f}"
+        if "%" in nf:
+            return f"{value * 100:.0f}%"
+        if "#,##0" in nf:
+            return f"{value:,.0f}"
+        return str(value)
+    return str(value)
+
+
+def _autofit_column_widths(src_values: Worksheet, dest: Worksheet, comments_col: Optional[int]) -> None:
+    """Set every column's width on `dest` based on the widest visible
+    content actually in that column -- header text, data values, and
+    (for formula cells) the DISPLAYED/computed result rather than the
+    formula text -- mirroring Excel's own AutoFit Column Width.
+
+    Reads from `src_values` (the `data_only=True` sibling load of the
+    same source sheet already used elsewhere in this module) rather
+    than `dest` itself, specifically so formula cells are measured by
+    their computed result: at the point this runs, a preserved
+    same-sheet formula cell on `dest` holds the FORMULA TEXT (e.g.
+    `"=D4-E4"`), which is not what a person looking at the sheet would
+    actually see -- `src_values` already has the real, already-computed
+    number for that exact cell.
+
+    This replaces `_copy_dimensions`'s usual "copy the source's own
+    explicit width" behavior for this sheet specifically (an explicit,
+    separate request) -- row heights and every other formatting
+    attribute are untouched.
+    """
+    max_col = src_values.max_column
+    max_row = src_values.max_row
+    widest_by_new_col: Dict[int, int] = {}
+
+    for col in range(1, max_col + 1):
+        new_col = _remap_column(col, comments_col)
+        if new_col is None:
+            continue
+        widest = widest_by_new_col.get(new_col, 0)
+        for row in range(1, max_row + 1):
+            cell = src_values.cell(row=row, column=col)
+            if cell.value is None:
+                continue
+            text_len = len(_display_text(cell.value, cell.number_format))
+            if text_len > widest:
+                widest = text_len
+        widest_by_new_col[new_col] = widest
+
+    for new_col, widest in widest_by_new_col.items():
+        # Excel's own column-width unit is approximately "number of
+        # characters of the default font that fit", with a small
+        # padding allowance for cell margins -- the same widely-used
+        # approximation the openpyxl community relies on, since
+        # openpyxl has no built-in AutoFit to call instead. A modest
+        # floor keeps genuinely empty/near-empty columns from
+        # collapsing to an unreadably thin sliver.
+        dest.column_dimensions[get_column_letter(new_col)].width = max(widest + 2, 6)
 
 
 def _copy_merged_cells(src: Worksheet, dest: Worksheet, comments_col: Optional[int]) -> None:

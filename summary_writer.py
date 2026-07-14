@@ -48,7 +48,7 @@ Every populated cell gets a thin black border (Feature 1) and every
 monetary column gets a proper Excel currency number format with a real
 "$" symbol, not text (Feature 4) -- see config.CURRENCY_FORMAT and
 config.BORDER_COLOR. A second, currently-empty worksheet named
-"<year> Actual & Forecast" is also created (Feature 5); it carries no
+"<year> Monthly Performance" is also created (Feature 5); it carries no
 business logic yet.
 """
 from __future__ import annotations
@@ -57,6 +57,7 @@ import calendar
 import re
 import zipfile
 import xml.etree.ElementTree as ET
+from copy import copy
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
@@ -320,6 +321,131 @@ class SummaryWriter:
         """
         _inject_cached_formula_values(path, self._formula_cache)
 
+    def apply_cross_sheet_total_rows(
+        self,
+        wb: Workbook,
+        worksheet2_name: str,
+        worksheet3_name: str,
+        source_sheet_name: str,
+        source_path: str,
+        comments_col: Optional[int],
+    ) -> None:
+        """Fill in the two placeholder rows `_build_monthly_sheet`
+        already reserved -- "TOTAL Secured" (right after "Subtotal :
+        Staffing- Secured") and "TOTAL Prospecting" (right after this
+        sheet's last section subtotal) -- with the exact values and
+        formatting of the correspondingly-labeled row on Sheet 3 (the
+        verbatim copy of the Master workbook's own sheet -- see
+        sheet_copy.py), copied column-for-column (Sheet 3's own column
+        layout, not Worksheet 2's monthly-role columns, since these are
+        grand-total recap rows carried over as-is from the source, not
+        remapped into Worksheet 2's per-month structure).
+
+        VALUES are read from a fresh ``data_only=True`` load of
+        ``source_path`` -- the true original Master workbook, looked up
+        there by ``source_sheet_name`` (the ORIGINAL file's own sheet
+        name, e.g. "Sales by Customer- <year>" -- unaffected by
+        whatever Sheet 3 is titled in the generated workbook) -- rather
+        than from Sheet 3's own (already-built) cells directly. Sheet 3
+        may itself hold a live, same-sheet formula for this exact row
+        (e.g. "TOTAL Secured" = `=+D58+D63`, correct and self-contained
+        on Sheet 3 -- see sheet_copy.py's formula preservation), but
+        that formula's cell references would be meaningless if copied
+        verbatim into Worksheet 2, which has a completely different
+        row/column layout. Reading the already-computed value straight
+        from the source sidesteps that entirely. STYLE still comes
+        from Sheet 3 itself -- looked up in `wb` by `worksheet3_name`
+        (the generated workbook's own current title for that sheet,
+        which may differ from `source_sheet_name`) -- since those cells
+        already have any theme-indexed colors resolved to explicit RGB
+        (see sheet_copy.py's `_resolve_theme_color`) and sit at the
+        correct, already-column-shifted positions.
+
+        Must run AFTER `copy_source_sheet_as_new_worksheet` has added
+        Sheet 3 to `wb` -- at the point `build()` runs, Sheet 3 doesn't
+        exist yet, which is why this is a separate, later step rather
+        than something `_build_monthly_sheet` does directly.
+        """
+        ws2 = wb[worksheet2_name]
+        ws3 = wb[worksheet3_name]
+
+        from openpyxl import load_workbook
+        source_values_ws = load_workbook(source_path, data_only=True)[source_sheet_name]
+
+        def _original_column(shifted_col: int) -> int:
+            """Undo sheet_copy.py's column shift: given a column index
+            on Sheet 3 (post-removal), return the corresponding column
+            index in the ORIGINAL source (pre-removal)."""
+            if comments_col is None:
+                return shifted_col
+            return shifted_col if shifted_col < comments_col else shifted_col + 1
+
+        # Both new rows share ONE formatting source -- "TOTAL
+        # Prospecting"'s own row on Sheet 3 (a plain yellow fill) --
+        # per an explicit request: even though Sheet 3's OWN "TOTAL
+        # Secured" row happens to carry a different native fill (a
+        # theme-resolved green), the two new rows in Worksheet 2
+        # should look like a matched pair using TOTAL Prospecting's
+        # yellow, not each pick up whatever its own source row
+        # happened to be styled with.
+        style_row_in_ws3 = self._find_row_by_label(ws3, "TOTAL Prospecting")
+
+        for label in ("TOTAL Secured", "TOTAL Prospecting"):
+            dest_row = self._find_row_by_label(ws2, label)
+            row_in_ws3 = self._find_row_by_label(ws3, label)
+            if dest_row is None or row_in_ws3 is None:
+                continue  # defensive: never fail generation over a missing label
+            style_source_row = style_row_in_ws3 if style_row_in_ws3 is not None else row_in_ws3
+            # Column A is the only cell "TOTAL Prospecting" is actually
+            # styled on in the source (a plain yellow fill on the label
+            # itself; every other column in that row is unstyled/
+            # transparent there). Per an explicit request, the same
+            # column-A VISUAL style (fill/font/border/alignment/
+            # protection) is applied across the WHOLE inserted row here
+            # -- column A through the last used column -- rather than
+            # mirroring each column's own (mostly blank) source style,
+            # so the two new rows read as a single, uniformly
+            # highlighted total row rather than one highlighted cell
+            # followed by unstyled ones.
+            #
+            # NUMBER FORMAT is deliberately excluded from that uniform
+            # copy: column A's own format is "General" (it holds a text
+            # label), and this row's other cells are freshly-reserved
+            # placeholders that have never had a format of their own
+            # set (see `_build_monthly_sheet`, which only ever touches
+            # column A when reserving this row) -- so "leave the
+            # existing format alone" would just mean every numeric
+            # column stays "General" too, losing its $/%% display
+            # entirely. Instead, each column's format is taken from the
+            # SUBTOTAL row immediately above (`dest_row - 1`) -- by
+            # construction always "Subtotal : Staffing- Secured" for
+            # "TOTAL Secured" and the sheet's last subtotal for "TOTAL
+            # Prospecting" -- which already carries the correct,
+            # column-specific currency/percentage/plain-number format
+            # for every column, since it's a normal, fully-built
+            # subtotal row.
+            style_cell = ws3.cell(row=style_source_row, column=1)
+            format_source_row = dest_row - 1
+            for col in range(1, ws3.max_column + 1):
+                dest_cell = ws2.cell(row=dest_row, column=col)
+                dest_cell.value = source_values_ws.cell(
+                    row=row_in_ws3, column=_original_column(col),
+                ).value
+                if style_cell.has_style:
+                    dest_cell.font = copy(style_cell.font)
+                    dest_cell.fill = copy(style_cell.fill)
+                    dest_cell.border = copy(style_cell.border)
+                    dest_cell.alignment = copy(style_cell.alignment)
+                    dest_cell.protection = copy(style_cell.protection)
+                dest_cell.number_format = ws2.cell(row=format_source_row, column=col).number_format
+
+    @staticmethod
+    def _find_row_by_label(ws: Worksheet, label: str) -> Optional[int]:
+        for row in range(1, ws.max_row + 1):
+            if str(ws.cell(row=row, column=1).value or "").strip() == label:
+                return row
+        return None
+
     def build(
         self,
         sections: List[Tuple[config.OutputSection, List[GroupSummary]]],
@@ -328,7 +454,14 @@ class SummaryWriter:
     ) -> Workbook:
         wb = Workbook()
         ws = wb.active
-        ws.title = str(self.target_year)
+        # Constant, not year-based: unlike Worksheet 2/3, this sheet's
+        # name doesn't vary by target year (see Change 6 -- "Rename
+        # worksheets"). Shortened from the originally-requested
+        # "Multi-Year Revenue & Margin Summary" (35 chars) to fit
+        # Excel's hard 31-character worksheet-name limit -- confirmed
+        # with the requester, who chose this exact wording over other
+        # shortenings.
+        ws.title = "Multi-Year Revenue & Margin"
 
         self._content_rows: List[int] = [1, 2, 3]  # header rows always bordered
         self._write_headers(ws)
@@ -362,7 +495,7 @@ class SummaryWriter:
         self._apply_borders(ws)  # Feature 1 -- after all content/formatting is in place
 
         # Feature 5 -- second worksheet, dynamically named.
-        second_sheet_name = f"{self.target_year} Actual & Forecast"
+        second_sheet_name = f"{self.target_year} Monthly Performance"
         if monthly_sections is not None and month_roles:
             self._build_monthly_sheet(wb, second_sheet_name, monthly_sections, month_roles)
         else:
@@ -376,7 +509,7 @@ class SummaryWriter:
                 row=1,
                 column=1,
                 value=(
-                    f"{self.target_year} Actual & Forecast -- detailed content will be "
+                    f"{self.target_year} Monthly Performance -- detailed content will be "
                     "added in a future update."
                 ),
             )
@@ -593,7 +726,7 @@ class SummaryWriter:
                 ws.cell(row=row, column=col).border = THIN_BLACK_BORDER
 
     # ------------------------------------------------------------------
-    # Worksheet 2: "<year> Actual & Forecast"
+    # Worksheet 2: "<year> Monthly Performance"
     # ------------------------------------------------------------------
     def _build_monthly_sheet(
         self,
@@ -702,9 +835,13 @@ class SummaryWriter:
                     "solid", fgColor=config.TOTAL_MARGIN_HEADER_FILL
                 )
 
-        # -- Body: same section/spacing model as Worksheet 1 ------------
+        # -- Body: same section/spacing model as Worksheet 1, EXCEPT the
+        # inter-section blank-row gap and two extra grand-total rows --
+        # see the block after each subtotal below. -------------------
         current_row = 3
-        for section, groups in monthly_sections:
+        section_count = len(monthly_sections)
+        for section_idx, (section, groups) in enumerate(monthly_sections):
+            is_last_section = section_idx == section_count - 1
             if section.heading:
                 self._write_plain_banner(ws2, current_row, section.heading, last_col, content_rows, config.SECTION_FILL)
                 current_row += 1
@@ -786,7 +923,46 @@ class SummaryWriter:
             else:
                 self._write_plain_banner(ws2, current_row, section.subtotal_label, last_col, content_rows, config.SUBTOTAL_FILL)
             current_row += 1
-            current_row += section.blank_rows_after_subtotal
+
+            # Two extra grand-total rows, requested specifically for
+            # Worksheet 2: "TOTAL Secured" immediately after the
+            # Staffing- Secured subtotal, and "TOTAL Prospecting"
+            # immediately after this sheet's last section subtotal.
+            # Only the LABEL is written here -- the actual values and
+            # formatting are filled in afterwards, by
+            # `apply_cross_sheet_total_rows` (see below), copied
+            # column-for-column from the correspondingly-labeled row on
+            # Sheet 3 ("<year> SOW Performance", a copy of the Master
+            # workbook's own "Sales by Customer- <year>" sheet -- see
+            # sheet_copy.py), which does not exist yet at this point in
+            # the pipeline (it's copied in after `build()` returns --
+            # see main.py/gui/runner.py).
+            # Reserving the row here, at its final position, rather
+            # than inserting it later avoids ever having to shift rows
+            # (and therefore rewrite every formula's cell references)
+            # after the sheet is otherwise complete.
+            if section.key == "staffing_secured":
+                content_rows.append(current_row)
+                cell = ws2.cell(row=current_row, column=col_name, value="TOTAL Secured")
+                cell.font = Font(name=config.FONT_NAME, size=config.FONT_SIZE, bold=True)
+                current_row += 1
+            if is_last_section:
+                content_rows.append(current_row)
+                cell = ws2.cell(row=current_row, column=col_name, value="TOTAL Prospecting")
+                cell.font = Font(name=config.FONT_NAME, size=config.FONT_SIZE, bold=True)
+                current_row += 1
+
+            # Exactly one blank row between this section (or the grand-
+            # total row(s) just written above it) and the next section
+            # -- a universal rule for Worksheet 2 specifically, applied
+            # here regardless of any individual section's own
+            # `blank_rows_after_subtotal` (which still governs
+            # Worksheet 1's spacing via `build()`, a separate method
+            # this does not touch). No trailing blank row after the
+            # last section, matching the sheet's existing end-of-
+            # content behavior.
+            if not is_last_section:
+                current_row += 1
 
         last_row = current_row
 

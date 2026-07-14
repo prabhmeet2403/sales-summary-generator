@@ -169,7 +169,7 @@ def main() -> int:
             # the SOURCE, that sheet is *supposed* to show the same
             # blank row, exactly like the source does. Comparing it
             # here would be asserting the opposite of what it's for.
-            for sheet_name in ("2026", "2026 Actual & Forecast"):
+            for sheet_name in ("Multi-Year Revenue & Margin", "2026 Monthly Performance"):
                 b_ws, m_ws = baseline_wb[sheet_name], modified_wb[sheet_name]
                 if b_ws.max_row != m_ws.max_row:
                     problems.append(f"[{sheet_name}] row count changed: {b_ws.max_row} vs {m_ws.max_row}")

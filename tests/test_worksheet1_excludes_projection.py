@@ -5,7 +5,8 @@ Locks in an explicit business rule: the two Projection sections
 ("Track 1 (Projection)" / "Track 2 (Projection)", Sub-Group codes
 DS30_Projection/DS50_Projection -- see
 `config.WORKSHEET2_ADDITIONAL_SECTIONS`) belong ONLY on Worksheet 2
-("<year> Actual & Forecast"), never on Worksheet 1 ("<year>").
+("<year> Monthly Performance"), never on Worksheet 1
+("Multi-Year Revenue & Margin").
 
 Guards against a regression of the mistake this rule was written to
 correct: adding the two DS codes directly to `config.OUTPUT_SECTIONS`

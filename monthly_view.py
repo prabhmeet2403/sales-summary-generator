@@ -2,7 +2,7 @@
 monthly_view.py
 ================
 Prepares the per-month Actual/Forecast revenue and margin breakdown that
-powers the "<year> Actual & Forecast" worksheet (Worksheet 2).
+powers the "<year> Monthly Performance" worksheet (Worksheet 2).
 
 This module adds no new business rule and duplicates no existing
 calculation. It:

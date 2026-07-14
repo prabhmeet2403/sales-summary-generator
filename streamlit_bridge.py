@@ -95,14 +95,18 @@ def preview_workbook(path: str, year: Optional[int] = None) -> PreviewResult:
             f"'{Path(path).name}' could not be opened as an Excel workbook.\n\n{exc}",
         ) from exc
 
+    # The DEFAULT business year (used when no explicit year is given)
+    # is read from the main sheet's own header content -- its
+    # month/date columns -- never parsed out of any sheet's name.
+    # `available_years` (sheet-name-derived) is kept only for reporting
+    # and for populating an explicit year override's set of valid
+    # choices; it no longer determines the default.
     available_years = master.available_years()
-    if not available_years:
-        raise GenerationError(
-            "No Forecast Sheets Found",
-            "No sheet matching \"Sales by Customer- <year>\" was found in this "
-            f"workbook.\n\nAvailable sheets:\n{', '.join(master.wb.sheetnames)}",
-        )
-    target_year = year or max(available_years)
+    try:
+        default_year = master.detect_business_year_from_content()
+    except SheetNotFoundError as exc:
+        raise GenerationError("Could Not Determine Business Year", str(exc)) from exc
+    target_year = year or default_year
 
     try:
         main_sheet_name = master.main_sheet_name(target_year)

@@ -81,7 +81,7 @@ def _check_year_succeeds(year: int, tmp_dir: Path) -> list:
         return problems
 
     wb = load_workbook(outputs[0])
-    sheet_name = str(year)
+    sheet_name = "Multi-Year Revenue & Margin"
     if sheet_name not in wb.sheetnames:
         problems.append(f"year {year}: expected sheet '{sheet_name}' not found (sheets: {wb.sheetnames})")
         return problems

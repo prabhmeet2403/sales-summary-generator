@@ -85,8 +85,8 @@ def generate(input_path: Path, output_dir: Path) -> Path:
 def diff_workbooks(path_a: Path, path_b: Path):
     wb_a = openpyxl.load_workbook(path_a, data_only=False)
     wb_b = openpyxl.load_workbook(path_b, data_only=False)
-    ws_a = wb_a["2026"]
-    ws_b = wb_b["2026"]
+    ws_a = wb_a["Multi-Year Revenue & Margin"]
+    ws_b = wb_b["Multi-Year Revenue & Margin"]
     max_row = max(ws_a.max_row, ws_b.max_row)
     max_col = max(ws_a.max_column, ws_b.max_column)
     diffs = []

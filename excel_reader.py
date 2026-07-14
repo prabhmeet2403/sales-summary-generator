@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple
@@ -137,6 +138,55 @@ def discover_years_for_pattern(wb: Workbook, pattern: str) -> List[int]:
         if m and m.groups():
             years.add(int(m.group(1)))
     return sorted(years)
+
+
+def _year_from_header_value(value: object) -> Optional[int]:
+    """Pull a calendar year out of one header cell's value, whether
+    it's a real Excel date/datetime (e.g. a "Jan" column literally
+    storing 2026-01-01) or text written as a date (e.g. "Jan-26",
+    "Jan 2026", "Q1 2026", "Q1'26"). Returns None if the value carries
+    no recognizable year at all (plain labels like "Actual", "Total",
+    "Name" etc. are expected to return None here)."""
+    if isinstance(value, (datetime, date)):
+        return value.year
+    if isinstance(value, str):
+        four_digit = re.search(r"\b(19|20)\d{2}\b", value)
+        if four_digit:
+            return int(four_digit.group(0))
+        two_digit = re.search(r"[-'](\d{2})\b", value)
+        if two_digit:
+            return 2000 + int(two_digit.group(1))
+    return None
+
+
+def extract_business_year_from_header(ws: Worksheet) -> Optional[int]:
+    """Determine the business year a sheet actually covers by reading
+    its own header row's month/date columns -- e.g. a real Excel date
+    like 2026-01-01 stored under a "Jan" column, or text like "Jan-26"
+    -- never by parsing the sheet's own NAME. Reuses `find_header_rows`
+    (the same header-row detection `build_column_map` itself relies on,
+    which already specifically prefers whichever row actually holds
+    real date-typed month columns over a coarser summary row above it)
+    rather than assuming a fixed row number.
+
+    Returns the single most common year found among the header's
+    date-like cells (guarding against one stray/incorrect date cell
+    outvoting the rest), or None if no header cell carries any
+    recognizable year information at all.
+    """
+    field_row, type_row = find_header_rows(ws)
+    max_col = min(ws.max_column, 80)
+    year_counts: Counter = Counter()
+
+    for row in {r for r in (field_row, type_row) if r}:
+        for col in range(1, max_col + 1):
+            year = _year_from_header_value(ws.cell(row=row, column=col).value)
+            if year is not None:
+                year_counts[year] += 1
+
+    if not year_counts:
+        return None
+    return year_counts.most_common(1)[0][0]
 
 
 # ==========================================================================
@@ -431,6 +481,52 @@ class MasterWorkbook:
 
     def available_years(self) -> List[int]:
         return discover_years_for_pattern(self.wb, config.MAIN_SHEET_PATTERN)
+
+    def detect_business_year_from_content(self) -> int:
+        """Determine the DEFAULT business year -- used for the output
+        filename and everywhere else `target_year` is needed -- from
+        the main "Sales by Customer" sheet's own header content (its
+        month/date columns), never by parsing a year out of any sheet's
+        NAME.
+
+        Locating WHICH sheet is the main data sheet still uses the
+        existing name-pattern matching (`find_sheet_by_pattern`,
+        unchanged, and still how a user's explicit `--year`/"Detected
+        Year" override picks a specific prior-year sheet -- that
+        override is a separate, pre-existing feature this doesn't
+        touch) -- but the actual YEAR VALUE that sheet represents is
+        then read from ITS OWN header, not from its name, satisfying
+        "do not rely on the sheet name" for the year itself.
+
+        Raises SheetNotFoundError with a clear message (rather than
+        silently falling back to name-parsing or any other source) if
+        no main sheet can be found at all, or if that sheet's header
+        carries no recognizable year information.
+        """
+        main_name = find_sheet_by_pattern(self.wb, config.MAIN_SHEET_PATTERN, year=None)
+        if not main_name:
+            raise SheetNotFoundError(
+                "No sheet matching 'Sales by Customer' was found in the workbook, "
+                "so the business year could not be determined from its content. "
+                f"Available sheets: {', '.join(self.wb.sheetnames)}"
+            )
+        try:
+            year = extract_business_year_from_header(self.wb[main_name])
+        except ColumnNotFoundError:
+            # The main sheet doesn't even have the expected header
+            # structure to scan (e.g. no "Name"/"Group" header row at
+            # all) -- same clear failure as "no year found", just a
+            # different reason for it.
+            year = None
+        if year is None:
+            raise SheetNotFoundError(
+                f"Could not determine the business year from sheet '{main_name}'s "
+                "own header content. The business year is read from that sheet's "
+                "month/date header columns (e.g. real dates or labels like "
+                "'Jan-26'), not from the sheet's name -- please confirm the "
+                "header row actually shows recognizable year information."
+            )
+        return year
 
     def sheet(self, name: str) -> Worksheet:
         if name not in self.wb.sheetnames:

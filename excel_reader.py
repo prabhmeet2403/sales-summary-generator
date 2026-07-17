@@ -353,6 +353,7 @@ class ProjectRow:
     name: str
     poc: Optional[str]
     group: str
+    section_key: Optional[str]
     sub_group_raw: Optional[str]
     ds_code: Optional[int]
     monthly_revenue: Dict[int, float]   # month(1-12) -> revenue
@@ -390,10 +391,33 @@ def read_project_rows(ws: Worksheet, cmap: ColumnMap) -> List[ProjectRow]:
     """
     rows: List[ProjectRow] = []
     start = cmap.field_header_row + 1
+    current_section = None
     for r in range(start, ws.max_row + 1):
+
+        first_cell = ws.cell(r, 1).value
+
+        if isinstance(first_cell, str):
+            text = first_cell.strip().lower()
+
+            if "solutions and staff augmentation" in text:
+                current_section = "projects_track1"
+
+            elif "staffing" in text:
+                current_section = "staffing_secured"
+
+            elif "investment" in text:
+                current_section = "investments"
+
+            elif "track 1" in text and "projection" in text:
+                current_section = "projects_track1_projection"
+
+            elif "track 2" in text and "projection" in text:
+                current_section = "projects_track2_projection"
+
         name_val = ws.cell(r, cmap.name).value
         group_val = ws.cell(r, cmap.group).value if cmap.group else None
         sub_group_val = ws.cell(r, cmap.sub_group).value if cmap.sub_group else None
+
 
         if cmap.sub_group:
             if is_blank(sub_group_val):
@@ -435,6 +459,7 @@ def read_project_rows(ws: Worksheet, cmap: ColumnMap) -> List[ProjectRow]:
                 name=str(name_val).strip(),
                 poc=(str(ws.cell(r, cmap.poc).value).strip() if cmap.poc and not is_blank(ws.cell(r, cmap.poc).value) else None),
                 group=str(group_val).strip(),
+                section_key=current_section,
                 sub_group_raw=(str(sub_group_val).strip() if not is_blank(sub_group_val) else None),
                 ds_code=extract_ds_code(sub_group_val),
                 monthly_revenue=monthly_revenue,

@@ -574,17 +574,43 @@ class SummaryWriter:
                 dest_cell.alignment = copy(format_source_cell.alignment)
                 dest_cell.number_format = format_source_cell.number_format
 
-            # VALUES: only for logical keys BOTH sheets actually have a
-            # column for (e.g. Sheet 3's Salary_$600 columns and
-            # Worksheet 2's Comments column each have no counterpart on
-            # the other side, and are correctly left untouched here).
+            # Find subtotal rows in Worksheet 2
+            track1_row = self._find_row_by_label(ws2, "Subtotal : Track 1")
+            staffing_row = self._find_row_by_label(ws2, "Subtotal : Staffing- Secured")
+            track1_proj_row = self._find_row_by_label(ws2, "Subtotal : Track 1 (Projection)")
+            track2_proj_row = self._find_row_by_label(ws2, "Subtotal : Track 2 (Projection)")
+
             for logical_key, dest_col in dest_col_map.items():
                 src_col = source_col_map.get(logical_key)
                 if src_col is None:
                     continue
-                ws2.cell(row=dest_row, column=dest_col).value = source_values_ws.cell(
-                    row=row_in_ws3, column=_original_column(src_col),
-                ).value
+
+                dest_cell = ws2.cell(row=dest_row, column=dest_col)
+
+                # Keep label column unchanged
+                if logical_key == "group":
+                    continue
+
+                # TOTAL Secured = Track 1 + Staffing Secured
+                if label == "TOTAL Secured" and track1_row and staffing_row:
+                    col_letter = get_column_letter(dest_col)
+                    dest_cell.value = (
+                        f"={col_letter}{track1_row}+{col_letter}{staffing_row}"
+                    )
+
+                # TOTAL Prospecting = Track 1 Projection + Track 2 Projection
+                elif label == "TOTAL Prospecting" and track1_proj_row and track2_proj_row:
+                    col_letter = get_column_letter(dest_col)
+                    dest_cell.value = (
+                        f"={col_letter}{track1_proj_row}+{col_letter}{track2_proj_row}"
+                    )
+
+                # Everything else stays as before
+                else:
+                    dest_cell.value = source_values_ws.cell(
+                        row=row_in_ws3,
+                        column=_original_column(src_col),
+                    ).value
 
     def autofit_worksheets(self, wb: Workbook, worksheet1_name: str, worksheet2_name: str) -> None:
         """Size every column on Worksheets 1 and 2 to fit the widest
@@ -1245,11 +1271,18 @@ class SummaryWriter:
             # (and therefore rewrite every formula's cell references)
             # after the sheet is otherwise complete.
             if section.key == "staffing_secured":
+                # blank row before TOTAL Secured
+                current_row += 1
+
                 content_rows.append(current_row)
                 cell = ws2.cell(row=current_row, column=col_name, value="TOTAL Secured")
                 cell.font = Font(name=config.FONT_NAME, size=config.FONT_SIZE, bold=True)
                 current_row += 1
+
             if is_last_section:
+                # blank row before TOTAL Prospecting
+                current_row += 1
+
                 content_rows.append(current_row)
                 cell = ws2.cell(row=current_row, column=col_name, value="TOTAL Prospecting")
                 cell.font = Font(name=config.FONT_NAME, size=config.FONT_SIZE, bold=True)

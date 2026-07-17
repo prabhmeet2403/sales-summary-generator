@@ -93,7 +93,10 @@ def aggregate_section(
     stats: SectionStats,
 ) -> List[GroupSummary]:
     """Apply Rules 1-4 & 6 to every row belonging to `section`."""
-    section_rows = [r for r in all_rows if r.ds_code in section.ds_codes]
+    section_rows = [
+    r for r in all_rows
+    if r.section_key == section.key
+]
     if section.row_range is not None:
         # Only set for sections that share a DS-code with another
         # section (see config.OutputSection.row_range) -- an

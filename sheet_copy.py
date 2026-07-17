@@ -604,6 +604,10 @@ def _set_cell_value_or_formula(
 
 
 def _copy_dimensions(src: Worksheet, dest: Worksheet, comments_col: Optional[int]) -> None:
+    # Precomputed once (a single pass over every cell) rather than
+    # rescanned per column below -- see `_columns_with_any_value`.
+    columns_with_content = _columns_with_any_value(src)
+
     for key, dim in src.column_dimensions.items():
         try:
             old_idx = column_index_from_string(key)
@@ -612,6 +616,25 @@ def _copy_dimensions(src: Worksheet, dest: Worksheet, comments_col: Optional[int
         new_idx = _remap_column(old_idx, comments_col)
         if new_idx is None:
             continue  # the removed Comments column's own dimension
+        # A column with no content anywhere is skipped entirely here --
+        # merely creating a destination ColumnDimension object (even
+        # only to copy hidden/outline_level/bestFit, never touching
+        # `.width` at all) makes openpyxl silently write its own
+        # constructor default (width=13, customWidth=1) into the
+        # output XML the moment the object exists, giving an
+        # otherwise-untouched, content-free column a visible width it
+        # never actually had (confirmed directly: the source can carry
+        # a stray column-dimension entry -- e.g. left over from a user
+        # once widening a column they never put data in -- for a
+        # column with zero cell values; copying that entry's
+        # unrelated hidden/outline/bestFit flags was enough to trigger
+        # the phantom width). `_autofit_column_widths`, run right after
+        # this, only ever sets a width for a column that DOES have
+        # content, so a content-free column is correctly left with no
+        # destination dimension entry at all -- identical to how a
+        # column the source never touched already looks.
+        if old_idx not in columns_with_content:
+            continue
         new_dim = dest.column_dimensions[get_column_letter(new_idx)]
         # width is deliberately NOT copied here -- see
         # `_autofit_column_widths`, called separately after this, which
@@ -629,6 +652,19 @@ def _copy_dimensions(src: Worksheet, dest: Worksheet, comments_col: Optional[int
 
     dest.sheet_format.defaultColWidth = src.sheet_format.defaultColWidth
     dest.sheet_format.defaultRowHeight = src.sheet_format.defaultRowHeight
+
+
+def _columns_with_any_value(ws: Worksheet) -> set:
+    """Set of 1-based column indices that have at least one populated
+    cell anywhere on `ws` -- computed once, in a single pass, and
+    reused for every column dimension entry (see `_copy_dimensions`)
+    rather than rescanning the whole sheet per column."""
+    cols = set()
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value is not None:
+                cols.add(cell.column)
+    return cols
 
 
 

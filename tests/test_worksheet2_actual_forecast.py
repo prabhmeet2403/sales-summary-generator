@@ -79,8 +79,16 @@ def main() -> int:
                 "Solutions and Staff Augmentation (Projects)",
                 "Solutions and Staff Augmentation (Projects) - Track 1",
                 "Staffing- Secured",
+                "Investments",
                 "Track 1 (Projection)",
                 "Track 2 (Projection)",
+                # Grand-total marker rows, not group names -- "TOTAL
+                # Secured" is inserted on Worksheet 2 only, between the
+                # Staffing- Secured and Investments sections, so it
+                # would otherwise break the "Worksheet 2 starts with
+                # Worksheet 1's own group list" prefix check below.
+                "TOTAL Secured",
+                "TOTAL Prospecting",
             )
             ws1_names = [
                 n for n in _row_names(ws1)

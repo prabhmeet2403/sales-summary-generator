@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # --------------------------------------------------------------------------
 # Paths
@@ -109,6 +109,26 @@ class OutputSection:
     blank_rows_after_title: int = 0     # title row -> first data row
     blank_rows_after_data: int = 1      # last data row -> subtotal row
     blank_rows_after_subtotal: int = 1  # subtotal row -> next section (or end of sheet)
+    # Almost always None -- a section is normally identified purely by
+    # its `ds_codes`, matched anywhere on the source sheet. Only set
+    # (dynamically, at runtime -- never a hardcoded pair of numbers
+    # here) when two DIFFERENT sections legitimately share the same
+    # DS-code (e.g. "Investments" reuses the DS10_Secured code that
+    # "projects_track1" already uses) and so need a source row-range
+    # as a tiebreaker, in addition to the DS-code, to tell their rows
+    # apart. See main.py/gui/runner.py's `_disambiguate_shared_ds_code_sections`.
+    row_range: Optional[Tuple[int, int]] = None
+    # Rule 6 ("skip blank groups": a group with zero revenue AND zero
+    # margin this year is dropped, on the assumption that means no
+    # real activity happened) is the right default for every existing
+    # section, where a $0 group really does mean a dormant/inactive
+    # engagement. "Investments" is structurally different -- its rows
+    # are deliberately non-billable internal projects that may
+    # genuinely have $0 revenue and margin every month, and still need
+    # to be shown (the user explicitly asked to "copy every Investment
+    # project"). Only that section sets this False; every other
+    # section keeps Rule 6's existing behavior unchanged.
+    skip_blank_groups: bool = True
 
 
 OUTPUT_SECTIONS: List[OutputSection] = [
@@ -138,8 +158,35 @@ OUTPUT_SECTIONS: List[OutputSection] = [
         # changes.
         sort_alphabetically=False,
         blank_rows_after_title=1,     # one blank row before the first data row
-        blank_rows_after_data=2,      # TWO blank rows before the subtotal (matches sample)
+        blank_rows_after_data=1,      # one blank row before the subtotal (matches every other section)
+        blank_rows_after_subtotal=1,  # one blank row before "Investments" (no longer the last section)
+    ),
+    OutputSection(
+        key="investments",
+        heading=None,
+        title="Investments",
+        subtotal_label="Subtotal : Investments",
+        # Reuses DS10_Secured -- the SAME code "projects_track1" above
+        # already matches -- because that's genuinely what the source
+        # sheet uses for these rows (confirmed directly against the
+        # Master workbook). Matching by DS-code alone would therefore
+        # pull "Investments"' own rows into "projects_track1" too (and
+        # vice versa); `row_range` is filled in dynamically at runtime
+        # (see main.py/gui/runner.py's
+        # `_disambiguate_shared_ds_code_sections`) as the tiebreaker,
+        # using the source sheet's own "Investments"/next-section
+        # heading rows -- never a hardcoded pair of row numbers here.
+        ds_codes=[10],
+        show_poc=False,        # matches "projects_track1" above, the closest structural analog
+        sort_alphabetically=True,
+        blank_rows_after_title=0,     # title immediately followed by first data row (matches source)
+        blank_rows_after_data=0,      # subtotal immediately follows the last data row (matches source)
         blank_rows_after_subtotal=0,  # last section on Worksheet 1
+        # These are deliberately non-billable internal projects that
+        # may genuinely show $0 revenue/margin every month -- still
+        # need to appear (Rule 6's "skip a $0 group" default assumption
+        # -- no real activity -- doesn't hold for this section).
+        skip_blank_groups=False,
     ),
 ]
 

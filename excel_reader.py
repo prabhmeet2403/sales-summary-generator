@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import logging
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple
 
@@ -534,3 +534,89 @@ class MasterWorkbook:
                 f"Sheet '{name}' not found. Available sheets: {', '.join(self.wb.sheetnames)}"
             )
         return self.wb[name]
+
+
+# A section's row_range set to this exact sentinel means its own
+# title text could not be found anywhere in this specific source
+# workbook at all -- i.e. this section doesn't apply to this
+# workbook's layout (as opposed to applying but genuinely having zero
+# rows this year, which is a normal, different situation still shown
+# with its usual heading/empty-subtotal banner). Callers building the
+# final section list for output (main.py/gui/runner.py) should exclude
+# any section carrying this sentinel entirely, rather than showing an
+# empty heading/subtotal pair for a section that isn't part of this
+# workbook at all.
+NO_MATCHING_ROWS: Tuple[int, int] = (-2, -1)
+
+
+def disambiguate_shared_ds_code_sections(
+    ws: Worksheet, sections: List["config.OutputSection"], name_col: int = 1,
+) -> List["config.OutputSection"]:
+    """Return a COPY of `sections` where any section whose `ds_codes`
+    overlap with another section's `ds_codes` gets its `row_range`
+    (see `config.OutputSection`) filled in dynamically, from `ws`'s own
+    row positions -- so two sections that legitimately reuse the same
+    DS-code (e.g. "Investments" and "projects_track1" both use
+    DS10_Secured in the Master workbook) don't each pull in the
+    other's rows too. Sections whose `ds_codes` are unique are
+    returned completely unchanged.
+
+    For each section needing disambiguation, its own `title` text is
+    searched for verbatim in the sheet's own Name column (`name_col`,
+    resolved dynamically from that sheet's header via `build_column_map`
+    -- never hardcoded to column A, since a differently-ordered source
+    sheet may have Name anywhere) to find where its block starts on
+    THIS specific workbook; its row_range runs from just after that row
+    to just before whichever OTHER disambiguated section's own title
+    row comes next (in `sections`' own order), or to the end of the
+    sheet if none does. Never a hardcoded pair of row numbers -- purely
+    derived from what's actually in `ws`.
+
+    A section whose own title text can't be found in `ws` at all (a
+    different source workbook's layout, missing that section entirely)
+    gets a row_range that can never match any real row, rather than
+    being left unrestricted -- so it safely produces zero rows instead
+    of incorrectly claiming a DS-code sibling's rows once that
+    sibling's own disambiguating range is applied.
+    """
+    code_counts: Dict[int, int] = {}
+    for section in sections:
+        for code in section.ds_codes:
+            code_counts[code] = code_counts.get(code, 0) + 1
+    needs_disambiguation = [s for s in sections if any(code_counts[c] > 1 for c in s.ds_codes)]
+    if not needs_disambiguation:
+        return sections
+
+    title_rows: Dict[str, Optional[int]] = {
+        section.key: _find_row_by_exact_label(ws, section.title, name_col) for section in needs_disambiguation
+    }
+
+    result: List["config.OutputSection"] = []
+    for section in sections:
+        if section.key not in title_rows:
+            result.append(section)
+            continue
+        start_row = title_rows[section.key]
+        if start_row is None:
+            result.append(replace(section, row_range=NO_MATCHING_ROWS))
+            continue
+        end_row = ws.max_row
+        for other in needs_disambiguation:
+            if other.key == section.key:
+                continue
+            other_row = title_rows.get(other.key)
+            if other_row is not None and other_row > start_row:
+                end_row = min(end_row, other_row - 1)
+        result.append(replace(section, row_range=(start_row + 1, end_row)))
+    return result
+
+
+def _find_row_by_exact_label(ws: Worksheet, label: str, name_col: int = 1) -> Optional[int]:
+    """Row index (1-based) of the first cell in column `name_col`
+    whose text exactly matches `label` (after stripping surrounding
+    whitespace), or None if not found anywhere on `ws`."""
+    target = label.strip()
+    for row in range(1, ws.max_row + 1):
+        if str(ws.cell(row=row, column=name_col).value or "").strip() == target:
+            return row
+    return None

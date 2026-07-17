@@ -64,6 +64,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.views import Selection
 from openpyxl.worksheet.worksheet import Worksheet
 
 import config
@@ -644,6 +645,57 @@ class SummaryWriter:
             # own auto-expand-row-to-fit-wrapped-text behavior, and
             # every row naturally stays at the sheet's default height
             # without needing to force it explicitly.
+
+    @staticmethod
+    def apply_freeze_panes(wb: Workbook, freeze_cell: str = "A5") -> None:
+        """Freeze panes at `freeze_cell` on EVERY worksheet in `wb`
+        (rows 1..freeze_cell's own row minus one stay visible while
+        scrolling), per an explicit, uniform requirement across all
+        three generated sheets -- overriding whatever each sheet's own
+        freeze/split configuration was before (Worksheet 1/2's own
+        `blank_rows_after_*`-driven header height, or Sheet 3's
+        previously source-matched pane/split, copied verbatim in
+        sheet_copy.py's `_copy_sheet_view`).
+
+        Only unmerges a merged cell range if it actually CROSSES the
+        freeze boundary (starts at or before the last frozen row and
+        ends at or after the first scrollable row) -- Excel cannot
+        freeze panes through the middle of a merge, so that specific
+        one has to give way, but every other merge on the sheet
+        (including ones that sit entirely within the frozen rows, e.g.
+        a heading banner wholly inside row 4) is left exactly as it
+        was, per an explicit "preserve all merged cells except those
+        that absolutely must be unmerged" requirement.
+
+        Also resets the sheet's `<selection>` list to a single, clean
+        entry for the resulting pane layout. This freeze is row-only
+        (no column split), which leaves exactly two panes -- "topLeft"
+        (frozen) and "bottomLeft" (scrollable) -- but a sheet whose
+        view was copied verbatim from a source with its own, more
+        complex split (Sheet 3, via sheet_copy.py's `_copy_sheet_view`)
+        can carry OLD selections for panes that no longer exist under
+        this new split (e.g. "topRight", left over from a source that
+        also had a column split) and/or more than one selection for
+        the same pane. Simply reassigning `freeze_panes` replaces the
+        `<pane>` element but does not touch `<selection>` at all, so
+        those stale entries would otherwise survive unchanged --
+        exactly what was corrupting Sheet 3 (confirmed directly: three
+        leftover selections, including one for a "topRight" pane this
+        sheet's new, row-only split doesn't have). Excel's own repair
+        step silently drops what it doesn't like here; this makes sure
+        there's nothing left for it to object to in the first place.
+        """
+        freeze_row = int("".join(ch for ch in freeze_cell if ch.isdigit()))
+        last_frozen_row = freeze_row - 1
+        for ws in wb.worksheets:
+            crossing = [
+                mr for mr in list(ws.merged_cells.ranges)
+                if mr.min_row <= last_frozen_row and mr.max_row >= freeze_row
+            ]
+            for merged_range in crossing:
+                ws.unmerge_cells(str(merged_range))
+            ws.freeze_panes = freeze_cell
+            ws.sheet_view.selection = [Selection(pane="bottomLeft", activeCell=freeze_cell, sqref=freeze_cell)]
 
     @staticmethod
     def _find_header_column(ws: Worksheet, header_text: str) -> Optional[int]:

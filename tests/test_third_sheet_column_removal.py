@@ -97,8 +97,14 @@ def main() -> int:
             from sheet_copy import _remap_range_string
             return _remap_range_string(ref, comments_col)
 
-        if new_f.freeze_panes != _shift_ref(src_f.freeze_panes):
-            problems.append(f"freeze_panes not correctly shifted: {src_f.freeze_panes!r} -> {new_f.freeze_panes!r}")
+        # freeze_panes is deliberately NOT expected to match the
+        # source's own (shifted) value any more: an explicit, later
+        # requirement now uniformly overrides every generated sheet's
+        # freeze panes to A5 (see SummaryWriter.apply_freeze_panes,
+        # called after this sheet is copied in) -- superseding the
+        # earlier source-fidelity requirement for this one aspect only.
+        if new_f.freeze_panes != "A5":
+            problems.append(f"freeze_panes not set to the required 'A5': {new_f.freeze_panes!r}")
         if new_f.auto_filter.ref != _shift_ref(src_f.auto_filter.ref):
             problems.append(f"auto_filter.ref not correctly shifted: {src_f.auto_filter.ref!r} -> {new_f.auto_filter.ref!r}")
 
@@ -183,21 +189,18 @@ def main() -> int:
             if "externalReference" in zf.read("xl/workbook.xml").decode("utf-8"):
                 problems.append("workbook.xml declares an externalReference")
 
-        # --- freeze panes / split panes / scroll position match the
-        #     source exactly (not just the lossy topLeftCell alone --
-        #     see sheet_copy.py's _copy_sheet_view for why xSplit/ySplit
-        #     matter independently of topLeftCell) ---
-        src_pane, new_pane = src_f.sheet_view.pane, new_f.sheet_view.pane
-        if (src_pane is None) != (new_pane is None):
-            problems.append("Pane presence differs between source and third sheet")
-        elif src_pane is not None:
-            if (src_pane.xSplit, src_pane.ySplit, src_pane.topLeftCell, src_pane.state) != \
-               (new_pane.xSplit, new_pane.ySplit, new_pane.topLeftCell, new_pane.state):
-                problems.append(
-                    f"Pane split/scroll differs: source=(xSplit={src_pane.xSplit}, ySplit={src_pane.ySplit}, "
-                    f"topLeftCell={src_pane.topLeftCell!r}) vs third sheet=(xSplit={new_pane.xSplit}, "
-                    f"ySplit={new_pane.ySplit}, topLeftCell={new_pane.topLeftCell!r})"
-                )
+        # --- freeze/split pane position: no longer expected to match
+        #     the source's own pane exactly -- see the freeze_panes
+        #     note above, same explicit A5-everywhere override applies
+        #     here too (openpyxl represents "A5" as ySplit=4,
+        #     topLeftCell="A5", state="frozen", xSplit=None/0 -- no
+        #     column freeze since A is the leftmost column) ---
+        new_pane = new_f.sheet_view.pane
+        if new_pane is None or (new_pane.ySplit, new_pane.topLeftCell) != (4, "A5"):
+            problems.append(
+                f"Pane not set to the required A5 freeze: "
+                f"{(new_pane.xSplit, new_pane.ySplit, new_pane.topLeftCell) if new_pane else None}"
+            )
 
         # --- Sheets 1 & 2 unaffected ---
         for sheet_name in ("Multi-Year Revenue & Margin", "2026 Monthly Performance"):

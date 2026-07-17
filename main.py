@@ -31,6 +31,8 @@ from excel_reader import (
     ColumnNotFoundError,
     build_column_map,
     read_project_rows,
+    disambiguate_shared_ds_code_sections,
+    NO_MATCHING_ROWS,
 )
 from comment_mapper import CommentMapper
 from historical_lookup import HistoricalLookup
@@ -166,7 +168,15 @@ def main(argv=None) -> int:
             # Projection sections to add.
             worksheet2_extra_sections_config: list = []
         else:
-            sections_config = config.OUTPUT_SECTIONS
+            sections_config = disambiguate_shared_ds_code_sections(ws_main, config.OUTPUT_SECTIONS, cmap.name or 1)
+            # A section whose row_range is this exact sentinel means
+            # its own title text wasn't found anywhere in THIS specific
+            # workbook at all (e.g. an older master workbook that
+            # doesn't have an "Investments" section yet) -- excluded
+            # entirely, rather than showing an empty heading/subtotal
+            # banner pair for a section that isn't part of this
+            # workbook's own layout.
+            sections_config = [s for s in sections_config if s.row_range != NO_MATCHING_ROWS]
             worksheet2_extra_sections_config = config.WORKSHEET2_ADDITIONAL_SECTIONS
             configured_codes = {
                 c for s in (sections_config + worksheet2_extra_sections_config) for c in s.ds_codes
@@ -264,6 +274,7 @@ def main(argv=None) -> int:
         # length was an explicit request; the Comments column is given
         # extra horizontal room instead (see column_autofit.py) so
         # wrapped text needs fewer lines rather than growing its row.
+        writer.apply_freeze_panes(wb)
 
         output_filename = f"Sales_and_Forecast_Summary_{target_year}.xlsx"
         output_path = output_dir / output_filename

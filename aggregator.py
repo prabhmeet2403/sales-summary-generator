@@ -94,6 +94,14 @@ def aggregate_section(
 ) -> List[GroupSummary]:
     """Apply Rules 1-4 & 6 to every row belonging to `section`."""
     section_rows = [r for r in all_rows if r.ds_code in section.ds_codes]
+    if section.row_range is not None:
+        # Only set for sections that share a DS-code with another
+        # section (see config.OutputSection.row_range) -- an
+        # additional, purely narrowing tiebreaker on top of the
+        # DS-code match above, never applied to (and therefore never
+        # changing behavior for) any section that doesn't need it.
+        start, end = section.row_range
+        section_rows = [r for r in section_rows if start <= r.row_index <= end]
     grouped = _group_rows_in_order(section_rows)
 
     summaries: List[GroupSummary] = []
@@ -131,8 +139,15 @@ def aggregate_section(
         quarter_margins = {q: round(v, 2) for q, v in quarter_margins.items()}
 
         # Rule 6 / "Skipped Blank Groups": drop groups with zero revenue
-        # AND zero margin - i.e. genuinely no activity this year.
-        if abs(total_revenue) < config.ZERO_TOLERANCE and abs(total_margin) < config.ZERO_TOLERANCE:
+        # AND zero margin - i.e. genuinely no activity this year --
+        # unless this section has opted out (see
+        # config.OutputSection.skip_blank_groups), because for it a $0
+        # group is expected, not a sign of no real activity.
+        if (
+            section.skip_blank_groups
+            and abs(total_revenue) < config.ZERO_TOLERANCE
+            and abs(total_margin) < config.ZERO_TOLERANCE
+        ):
             stats.skipped_blank_groups.append(display_name)
             continue
 

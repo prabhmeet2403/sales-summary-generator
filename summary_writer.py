@@ -503,6 +503,17 @@ class SummaryWriter:
         source_col_map = _map_source_sheet_columns(ws3)
         dest_col_map = _map_worksheet2_columns(ws2)
 
+        # Subtotal rows on Worksheet 2, found dynamically by label --
+        # moved up here (previously computed further down, once per
+        # label iteration) so they can now ALSO serve as the formatting
+        # source for each TOTAL row below, not just the SUM-formula
+        # source they already were. Same single source of truth either
+        # way: never a fixed row number or offset.
+        track1_row = self._find_row_by_label(ws2, "Subtotal : Track 1")
+        staffing_row = self._find_row_by_label(ws2, "Subtotal : Staffing- Secured")
+        track1_proj_row = self._find_row_by_label(ws2, "Subtotal : Track 1 (Projection)")
+        track2_proj_row = self._find_row_by_label(ws2, "Subtotal : Track 2 (Projection)")
+
         for label in ("TOTAL Secured", "TOTAL Prospecting"):
             dest_row = self._find_row_by_label(ws2, label)
             row_in_ws3 = self._find_row_by_label(ws3, label)
@@ -533,15 +544,35 @@ class SummaryWriter:
             # own alignment/format set (see `_build_monthly_sheet`,
             # which only ever touches column A when reserving this
             # row) -- so both are instead taken from the SUBTOTAL row
-            # immediately above (`dest_row - 1`) -- by construction
-            # always "Subtotal : Staffing- Secured" for "TOTAL Secured"
-            # and the sheet's last subtotal for "TOTAL Prospecting" --
-            # which already carries the correct, column-specific
-            # alignment (left for labels, right for currency/numbers)
-            # and number format (currency/percentage/plain) for every
-            # column, since it's a normal, fully-built subtotal row.
+            # that formula-wise feeds this TOTAL row -- "Subtotal :
+            # Staffing- Secured" for "TOTAL Secured", "Subtotal : Track
+            # 2 (Projection)" for "TOTAL Prospecting" (the same
+            # `staffing_row`/`track2_proj_row` labels already resolved
+            # above, used below for the SUM formulas too) -- which
+            # already carries the correct, column-specific alignment
+            # (left for labels, right for currency/numbers) and number
+            # format (currency/percentage/plain) for every column,
+            # since it's a normal, fully-built subtotal row. This is
+            # found by label, not by a fixed offset from `dest_row`:
+            # `_build_monthly_sheet` inserts a blank spacer row between
+            # each subtotal and its TOTAL row, so `dest_row - 1` would
+            # actually land on that blank row, not the subtotal --
+            # resolving by label sidesteps that regardless of how many
+            # spacer rows the sheet's layout ever puts between them.
             style_cell = ws3.cell(row=style_source_row, column=1)
-            format_source_row = dest_row - 1
+            if label == "TOTAL Secured":
+                format_source_row = staffing_row
+            elif label == "TOTAL Prospecting":
+                format_source_row = track2_proj_row
+            else:
+                format_source_row = None
+            if format_source_row is None:
+                # Defensive fallback only -- never expected given the
+                # fixed `label` tuple this loop iterates over and that
+                # `_build_monthly_sheet` always writes both subtotals
+                # before either TOTAL row. Falls back to the row
+                # directly above rather than failing generation.
+                format_source_row = dest_row - 1
 
             # Visual styling + alignment + number format: applied to
             # EVERY column Worksheet 2 actually has (not Sheet 3's
@@ -549,6 +580,22 @@ class SummaryWriter:
             # copied into it -- e.g. "Comments" has no Sheet-3
             # equivalent at all and stays blank, but still needs to be
             # part of the uniformly-highlighted row.
+            #
+            # FONT is deliberately read from column 1 of
+            # `format_source_row` specifically, not per-column like
+            # alignment/number_format below: column 1 (the subtotal's
+            # own label cell) is always explicitly set to Worksheet 2's
+            # bold total/subtotal font, by BOTH ways a subtotal row gets
+            # written -- the normal formula-based path AND the
+            # zero-record "plain banner" path (a single merged cell
+            # spanning the whole row, whose non-anchor columns never
+            # have their own font touched at all). Reading any other
+            # column's font would be correct for a populated section
+            # but silently NON-bold whenever the section that feeds this
+            # TOTAL row happens to have zero records this run -- reading
+            # column 1 instead is reliable dynamically for 0, 1, or many
+            # records, with no special-casing needed.
+            format_source_font = ws2.cell(row=format_source_row, column=1).font
             for col in range(1, ws2.max_column + 1):
                 dest_cell = ws2.cell(row=dest_row, column=col)
                 format_source_cell = ws2.cell(row=format_source_row, column=col)
@@ -567,19 +614,17 @@ class SummaryWriter:
                     # fill/border/protection still come from Sheet 3,
                     # since that's specifically what gives this row its
                     # distinctive yellow highlight.
-                    dest_cell.font = copy(format_source_cell.font)
+                    dest_cell.font = copy(format_source_font)
                     dest_cell.fill = copy(style_cell.fill)
                     dest_cell.border = copy(style_cell.border)
                     dest_cell.protection = copy(style_cell.protection)
                 dest_cell.alignment = copy(format_source_cell.alignment)
                 dest_cell.number_format = format_source_cell.number_format
 
-            # Find subtotal rows in Worksheet 2
-            track1_row = self._find_row_by_label(ws2, "Subtotal : Track 1")
-            staffing_row = self._find_row_by_label(ws2, "Subtotal : Staffing- Secured")
-            track1_proj_row = self._find_row_by_label(ws2, "Subtotal : Track 1 (Projection)")
-            track2_proj_row = self._find_row_by_label(ws2, "Subtotal : Track 2 (Projection)")
-
+            # track1_row/staffing_row/track1_proj_row/track2_proj_row
+            # were already resolved above (before this per-label loop),
+            # and used above too as the formatting source -- reused here
+            # unchanged for the SUM formulas below.
             for logical_key, dest_col in dest_col_map.items():
                 src_col = source_col_map.get(logical_key)
                 if src_col is None:
@@ -774,7 +819,19 @@ class SummaryWriter:
 
             self._write_banner_row(ws, current_row, section.title, fill=config.SUBHEADING_FILL)
             current_row += 1
-            current_row += section.blank_rows_after_title
+            # `section.blank_rows_after_title` is deliberately NOT applied
+            # here. This value was originally set (see config.py's
+            # OutputSection field comments) to replicate a hand-built
+            # reference workbook's own spacing verbatim -- but that
+            # conflicts with this report's now-established rule that a
+            # section's title row is always immediately followed by its
+            # first data row, regardless of section size. Per an explicit
+            # instruction not to modify config.py, the field itself is
+            # left as documentation of the original per-section values;
+            # this is simply no longer read at the point spacing is
+            # decided. `blank_rows_after_heading` (heading -> title) and
+            # `blank_rows_after_subtotal` (subtotal -> next section) are
+            # untouched -- they aren't part of this issue.
 
             data_start = current_row
             for group in groups:
@@ -782,7 +839,14 @@ class SummaryWriter:
                 current_row += 1
             data_end = current_row - 1
 
-            current_row += section.blank_rows_after_data
+            # `section.blank_rows_after_data` is deliberately NOT applied
+            # here, for the same reason as `blank_rows_after_title` above:
+            # the subtotal (or, for a zero-record section, the plain
+            # subtotal banner in the `else` branch below) must always
+            # land immediately at `current_row` as it stands right here --
+            # i.e. immediately after the section's last record. Holds
+            # dynamically for any number of records; nothing here depends
+            # on today's row counts.
             if data_end >= data_start:
                 self._write_subtotal_row(ws, current_row, section.subtotal_label, data_start, data_end)
             else:
@@ -1159,7 +1223,15 @@ class SummaryWriter:
 
             self._write_plain_banner(ws2, current_row, section.title, last_col, content_rows, config.SUBHEADING_FILL)
             current_row += 1
-            current_row += section.blank_rows_after_title
+            # `section.blank_rows_after_title` is deliberately NOT applied
+            # here. That field exists to reproduce Worksheet 1's own
+            # per-section spacing verbatim (see config.py's OutputSection
+            # docstring), and `build()` (Worksheet 1) still honors it in
+            # full, unchanged. Worksheet 2 instead follows its own fixed,
+            # sheet-wide rule: the title row is always immediately
+            # followed by the first data row, for every section,
+            # regardless of section size -- so this sheet's layout never
+            # inherits spacing tuned for a different sheet.
 
             data_start = current_row
             total_fill = PatternFill("solid", fgColor=config.TOTAL_DATA_FILL)
@@ -1236,7 +1308,19 @@ class SummaryWriter:
                 current_row += 1
             data_end = current_row - 1
 
-            current_row += section.blank_rows_after_data
+            # `section.blank_rows_after_data` is deliberately NOT applied
+            # here, for the same reason as `blank_rows_after_title` above
+            # -- it exists to reproduce Worksheet 1's own spacing
+            # verbatim, and `build()` (Worksheet 1) still honors it in
+            # full, unchanged. On Worksheet 2 the subtotal (or, for a
+            # section with zero data rows, the plain subtotal banner in
+            # the `else` branch below) must always land immediately at
+            # `current_row` as it stands right here -- i.e. immediately
+            # after the section's last record, or immediately after the
+            # title when a section has no records at all. This holds
+            # dynamically for any number of rows a section may have in
+            # any future workbook; nothing here depends on today's row
+            # counts.
             if data_end >= data_start:
                 content_rows.append(current_row)
                 cell = ws2.cell(row=current_row, column=col_name, value=section.subtotal_label)

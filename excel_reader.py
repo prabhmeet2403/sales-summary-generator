@@ -395,8 +395,24 @@ def read_project_rows(ws: Worksheet, cmap: ColumnMap) -> List[ProjectRow]:
     for r in range(start, ws.max_row + 1):
 
         first_cell = ws.cell(r, 1).value
+        sub_group_val = ws.cell(r, cmap.sub_group).value if cmap.sub_group else None
 
-        if isinstance(first_cell, str):
+        # Section-heading detection below only applies to rows that are
+        # structurally headings -- every genuine heading/banner/subtotal
+        # row on this sheet has a blank Sub-Group, while every genuine
+        # data row has a populated one (verified across every
+        # "Sales by Customer- <year>" sheet in every available master
+        # workbook). Without this guard, a DATA row whose own Name
+        # happens to contain one of these keywords -- e.g. "MetaSys
+        # Staffing Reports Wendy", a genuine Investments-section row --
+        # gets misread as if it were a new section heading, corrupting
+        # `current_section` for itself and every row after it until the
+        # next real heading. When there's no Sub-Group column at all
+        # (`cmap.sub_group is None`), this is vacuously true for every
+        # row, leaving that fallback path's behavior unchanged.
+        is_heading_candidate = cmap.sub_group is None or is_blank(sub_group_val)
+
+        if is_heading_candidate and isinstance(first_cell, str):
             text = first_cell.strip().lower()
 
             if "solutions and staff augmentation" in text:
@@ -416,7 +432,6 @@ def read_project_rows(ws: Worksheet, cmap: ColumnMap) -> List[ProjectRow]:
 
         name_val = ws.cell(r, cmap.name).value
         group_val = ws.cell(r, cmap.group).value if cmap.group else None
-        sub_group_val = ws.cell(r, cmap.sub_group).value if cmap.sub_group else None
 
 
         if cmap.sub_group:

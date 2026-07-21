@@ -335,6 +335,15 @@ SUBTOTAL_FILL = "FFCCFFFF"
 TOTAL_MARGIN_HEADER_FILL = "FFFFFF00"
 TOTAL_DATA_FILL = "FFB4E5A2"
 MARGIN_DATA_FILL = "FFF6C6AD"
+# FINAL_MARGIN_DATA_FILL (green) applies only to the one Margin column
+# that sits immediately before Comments (Worksheet 1's `col_current_
+# margin`) or Confidence (Worksheet 2's `col_margin`) -- i.e. the
+# final/current-period Margin figure, never the prior-year or
+# quarterly/monthly per-period Margin columns, which keep
+# MARGIN_DATA_FILL's original orange. Deliberately the exact same
+# shade as TOTAL_DATA_FILL (referenced directly, not just copied, so
+# the two can never drift apart if TOTAL_DATA_FILL is ever changed).
+FINAL_MARGIN_DATA_FILL = TOTAL_DATA_FILL
 BORDER_COLOR = "FF000000"  # thin black border applied to every populated cell
 # Column widths are no longer configured as fixed constants here --
 # Worksheets 1/2/3 are all sized to their actual content, after the

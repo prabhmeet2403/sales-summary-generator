@@ -89,6 +89,46 @@ def display_text(value: object, number_format: Optional[str]) -> str:
     return str(value)
 
 
+# Bold text renders measurably wider, per character, than regular
+# weight at the same point size -- a plain character-count estimate
+# systematically understates a bold cell's true rendered width. Every
+# header, banner, subtotal, and TOTAL row in this workbook is bold
+# (see summary_writer.py), so whenever one of those short, bold labels
+# (e.g. "Margin", a 3-letter month abbreviation) happens to be the
+# widest thing in its column -- typically a column whose actual data
+# values are comparatively short too, leaving no other content to mask
+# the shortfall -- the plain-text estimate can land the column just
+# narrow enough that Excel visually clips the header until the cell is
+# selected or the column is manually widened. This is a well-established
+# approximation for sans-serif bold-vs-regular character width, not an
+# exact metric (a byte-perfect one would require actually rendering the
+# font, which openpyxl cannot do) -- applied only to bold cells, so
+# regular-weight content (the vast majority of the sheet) is completely
+# unaffected.
+#
+# A pure percentage factor barely helps very short bold labels (15% of
+# 3 characters is well under half a character) -- exactly the case
+# that clips hardest, since there's so little length to begin with.
+# `BOLD_MIN_BONUS` adds a small flat floor on top of the percentage
+# scaling so short bold text (month abbreviations, "Total", "Margin")
+# gets meaningful help too, while longer bold text still scales
+# proportionally rather than by an ever-larger flat amount.
+BOLD_WIDTH_FACTOR = 1.15
+BOLD_MIN_BONUS = 1.5
+
+
+def measured_length(cell: Cell, value: object) -> float:
+    """The effective character length to use for `cell` when comparing
+    column widths -- `display_text`'s plain length, inflated slightly
+    for a bold cell (see `BOLD_WIDTH_FACTOR`/`BOLD_MIN_BONUS`) to
+    reflect that a bold cell's true rendered width is measurably more
+    than its character count alone suggests."""
+    text_len = len(display_text(value, cell.number_format))
+    if cell.font is not None and cell.font.bold:
+        return text_len + max(BOLD_MIN_BONUS, text_len * (BOLD_WIDTH_FACTOR - 1))
+    return text_len
+
+
 def autofit_worksheet_columns(
     ws: Worksheet,
     get_measured_value: Callable[[Cell], object] = lambda cell: cell.value,
@@ -116,14 +156,14 @@ def autofit_worksheet_columns(
     line so it needs fewer lines, which is what keeps every row the
     same height regardless of comment length.
     """
-    widest_by_col: Dict[int, int] = {}
+    widest_by_col: Dict[int, float] = {}
 
     for row in ws.iter_rows():
         for cell in row:
             value = get_measured_value(cell)
             if value is None:
                 continue
-            text_len = len(display_text(value, cell.number_format))
+            text_len = measured_length(cell, value)
             if text_len > widest_by_col.get(cell.column, 0):
                 widest_by_col[cell.column] = text_len
 

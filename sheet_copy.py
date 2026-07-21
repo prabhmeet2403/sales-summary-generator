@@ -695,7 +695,7 @@ def _autofit_column_widths(src_values: Worksheet, dest: Worksheet, comments_col:
     # pre-shift sheet) and remap each column index to where it lands on
     # `dest`, exactly as the original implementation did, just through
     # the shared measuring/bounding logic now.
-    widest_by_new_col: Dict[int, int] = {}
+    widest_by_new_col: Dict[int, float] = {}
     for col in range(1, src_values.max_column + 1):
         new_col = _remap_column(col, comments_col)
         if new_col is None:
@@ -704,7 +704,7 @@ def _autofit_column_widths(src_values: Worksheet, dest: Worksheet, comments_col:
             cell = src_values.cell(row=row, column=col)
             if cell.value is None:
                 continue
-            text_len = len(column_autofit.display_text(cell.value, cell.number_format))
+            text_len = column_autofit.measured_length(cell, cell.value)
             if text_len > widest_by_new_col.get(new_col, 0):
                 widest_by_new_col[new_col] = text_len
 

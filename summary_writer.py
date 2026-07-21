@@ -990,7 +990,7 @@ class SummaryWriter:
     def _write_group_row(self, ws: Worksheet, row: int, group: GroupSummary, show_poc: bool) -> None:
         self._content_rows.append(row)
         ws.cell(row=row, column=self.col_name, value=group.group_name)
-        if show_poc and group.poc:
+        if group.poc:
             ws.cell(row=row, column=self.col_poc, value=group.poc)
 
         total_fill = PatternFill("solid", fgColor=config.TOTAL_DATA_FILL)

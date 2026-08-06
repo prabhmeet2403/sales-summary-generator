@@ -124,7 +124,7 @@ def build_monthly_sections(
         for g in groups:
             group_rows = [
                 r for r in rows_by_name.get(normalize_name(g.group_name), [])
-                if r.ds_code in section.ds_codes
+                if r.section_key == section.key
             ]
 
             monthly_revenue: Dict[int, float] = {m: 0.0 for m in cmap.months}

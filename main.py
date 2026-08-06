@@ -29,10 +29,13 @@ from excel_reader import (
     MasterWorkbook,
     SheetNotFoundError,
     ColumnNotFoundError,
+    RequiredColumnMissingError,
+    DuplicateColumnHeaderError,
     build_column_map,
     read_project_rows,
     disambiguate_shared_ds_code_sections,
     NO_MATCHING_ROWS,
+    is_blank,
 )
 from comment_mapper import CommentMapper
 from historical_lookup import HistoricalLookup
@@ -89,6 +92,23 @@ def main(argv=None) -> int:
     log_path = config.LOG_DIR / f"run_{timestamp}.log"
     logger = setup_logging(log_path)
 
+    # Config self-validation -- runs once, before anything else (no
+    # workbook has been opened yet). A bad config.py edit (duplicate
+    # group_marker, duplicate section key, invalid category) is
+    # reported here, clearly, rather than surfacing later as a wrong
+    # number in a generated report.
+    config_errors = config.validate_config()
+    if config_errors:
+        for err in config_errors:
+            print(f"ERROR: {err}")
+        print("Generation aborted.")
+        logger.error(
+            "Generation aborted: %d configuration error(s) found in config.py. "
+            "See the messages above.",
+            len(config_errors),
+        )
+        return 1
+
     report = ValidationReport()
 
     input_path = Path(args.input) if args.input else find_default_input()
@@ -130,10 +150,9 @@ def main(argv=None) -> int:
         cmap = build_column_map(ws_main)
 
         if cmap.group is None:
-            raise ColumnNotFoundError(
-                f"Required column 'Group' was not found on sheet '{main_sheet_name}'. "
-                "Projects cannot be grouped into Summary rows without it."
-            )
+            raise RequiredColumnMissingError("Group")
+        if cmap.sub_group is None:
+            raise RequiredColumnMissingError("Sub-Group")
         if not cmap.months:
             raise ColumnNotFoundError(
                 f"No monthly Actual/Forecast columns were found on sheet '{main_sheet_name}'. "
@@ -142,6 +161,50 @@ def main(argv=None) -> int:
 
         rows = read_project_rows(ws_main, cmap)
         logger.info("Read %d project rows from sheet '%s'.", len(rows), main_sheet_name)
+
+        # Additive validation pass -- classifies every physical row as
+        # VALID/WARNING/ERROR and writes a report. Does not filter,
+        # reorder, or otherwise change `rows` or anything downstream.
+        try:
+            from row_validator import validate_rows
+            validation_results = validate_rows(ws_main, cmap)
+            n_errors = sum(1 for v in validation_results if v.status == "ERROR")
+            n_warnings = sum(1 for v in validation_results if v.status == "WARNING")
+            logger.info(
+                "Row validation: %d valid, %d warning, %d error (see logs/row_validation_report_*.txt).",
+                sum(1 for v in validation_results if v.status == "VALID"), n_warnings, n_errors,
+            )
+            report_path = Path("logs") / f"row_validation_report_{datetime.now():%Y%m%d_%H%M%S}.txt"
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(report_path, "w") as f:
+                f.write(f"{'Row':>5} | {'Customer':<40} | {'Status':<7} | Reason\n")
+                f.write("-" * 120 + "\n")
+                for v in validation_results:
+                    if v.status != "VALID":
+                        f.write(f"{v.row_index:>5} | {(v.name or '')[:40]:<40} | {v.status:<7} | {v.reason}\n")
+        except Exception:
+            logger.exception("Row validation pass failed -- continuing without it (non-fatal, diagnostic only).")
+            validation_results = []
+
+        error_rows = [v for v in validation_results if v.status == "ERROR"]
+        if error_rows:
+            for v in error_rows:
+                missing = []
+                if is_blank(v.name):
+                    missing.append("Missing Name")
+                if is_blank(v.group):
+                    missing.append("Missing Group")
+                if not missing:
+                    missing.append(v.reason)
+                for m in missing:
+                    print(f"Row {v.row_index}: {m}")
+            print("Generation aborted.")
+            logger.error(
+                "Generation aborted: %d row(s) failed validation with ERROR status. "
+                "See the messages above and logs/row_validation_report_*.txt for detail.",
+                len(error_rows),
+            )
+            return 1
 
         if cmap.sub_group is None:
             logger.warning(
@@ -168,7 +231,7 @@ def main(argv=None) -> int:
             # Projection sections to add.
             worksheet2_extra_sections_config: list = []
         else:
-            sections_config = disambiguate_shared_ds_code_sections(ws_main, config.OUTPUT_SECTIONS, cmap.name or 1)
+            sections_config = disambiguate_shared_ds_code_sections(ws_main, config.OUTPUT_SECTIONS, cmap.name or 1, cmap.group)
             # A section whose row_range is this exact sentinel means
             # its own title text wasn't found anywhere in THIS specific
             # workbook at all (e.g. an older master workbook that
@@ -284,6 +347,12 @@ def main(argv=None) -> int:
         report.success = True
         logger.info("Summary workbook written to %s", output_path)
 
+    except (RequiredColumnMissingError, DuplicateColumnHeaderError) as exc:
+        print(f"ERROR: {exc}")
+        print("Generation aborted.")
+        report.errors.append(str(exc))
+        report.success = False
+        logger.error(str(exc))
     except (SheetNotFoundError, ColumnNotFoundError) as exc:
         report.errors.append(str(exc))
         report.success = False

@@ -13,6 +13,7 @@ with.
 from __future__ import annotations
 
 import re
+import unicodedata
 import logging
 from collections import Counter
 from dataclasses import dataclass, field, replace
@@ -39,6 +40,25 @@ class ColumnNotFoundError(Exception):
     """Raised when a required column cannot be located dynamically."""
 
 
+class RequiredColumnMissingError(Exception):
+    """Raised when a specific, named required column (e.g. "Group",
+    "Sub-Group") cannot be found at all. Carries the exact column
+    name so callers can report precisely which one is missing,
+    instead of a generic "some column is missing" message."""
+    def __init__(self, column_name: str):
+        self.column_name = column_name
+        super().__init__(f"Required column missing: {column_name}")
+
+
+class DuplicateColumnHeaderError(Exception):
+    """Raised when the same required header (e.g. "Group") appears
+    more than once in the field-header row. Carries the exact header
+    name so callers can report precisely which one is duplicated."""
+    def __init__(self, column_name: str):
+        self.column_name = column_name
+        super().__init__(f"Duplicate column header: {column_name}")
+
+
 # ==========================================================================
 # Small text helpers
 # ==========================================================================
@@ -59,7 +79,7 @@ def normalize_name(value) -> str:
     """Normalise a customer/group display name for matching purposes."""
     if value is None:
         return ""
-    text = str(value).strip().lower()
+    text = unicodedata.normalize("NFKC", str(value)).strip().lower()
     text = re.sub(r"\s+", " ", text)
     return text
 
@@ -255,6 +275,22 @@ def find_header_rows(ws: Worksheet, max_scan_rows: int = 20) -> Tuple[int, int]:
             candidates.append((row, date_count))
 
     if not candidates:
+        # Distinguish precisely which of "Name"/"Group" is actually
+        # missing (rather than a generic "both" message) by checking
+        # each independently across the same scanned rows.
+        name_found = False
+        group_found = False
+        for row in range(1, max_scan_rows + 1):
+            row_values = [ws.cell(row, c).value for c in range(1, max_col + 1)]
+            normalized = [normalize_header(v) for v in row_values]
+            if "name" in normalized:
+                name_found = True
+            if "group" in normalized:
+                group_found = True
+        if not group_found:
+            raise RequiredColumnMissingError("Group")
+        if not name_found:
+            raise RequiredColumnMissingError("Name")
         raise ColumnNotFoundError(
             f"Could not locate a header row containing both 'Name' and 'Group' "
             f"in the first {max_scan_rows} rows of sheet '{ws.title}'."
@@ -295,7 +331,9 @@ def build_column_map(ws: Worksheet) -> ColumnMap:
             continue
 
         # --- plain text columns ----------------------------------------
-        if norm == "name" and cmap.name is None:
+        if norm == "name":
+            if cmap.name is not None:
+                raise DuplicateColumnHeaderError("Name")
             cmap.name = col
         elif norm == "poc" and cmap.poc is None:
             cmap.poc = col
@@ -303,7 +341,9 @@ def build_column_map(ws: Worksheet) -> ColumnMap:
             cmap.service = col
         elif norm == "subgroup" and cmap.sub_group is None:
             cmap.sub_group = col
-        elif norm == "group" and cmap.group is None:
+        elif norm == "group":
+            if cmap.group is not None:
+                raise DuplicateColumnHeaderError("Group")
             cmap.group = col
         elif norm == "comments" and cmap.comments is None:
             cmap.comments = col
@@ -381,6 +421,27 @@ def extract_ds_code(sub_group_value) -> Optional[int]:
     return int(m.group(1))
 
 
+# Every section that can appear anywhere in the source sheet, combined
+# once here so the classifier below never has to know about
+# OUTPUT_SECTIONS vs WORKSHEET2_ADDITIONAL_SECTIONS as two separate
+# lists -- adding a section to either config.py list is sufficient.
+ALL_CONFIGURED_SECTIONS = list(config.OUTPUT_SECTIONS) + list(config.WORKSHEET2_ADDITIONAL_SECTIONS)
+
+# The Group column is the ONLY source of truth for section
+# classification (per explicit business requirement -- visible
+# headings are presentation-only and may be renamed at any time). This
+# maps each section's own `group_marker` text (e.g. "Track 1-Secured")
+# to its internal `key`. Adding a brand-new section (e.g. a future
+# "Track 3") requires only a new entry in config.py's OUTPUT_SECTIONS /
+# WORKSHEET2_ADDITIONAL_SECTIONS with its own `group_marker` --
+# nothing in this module needs to change.
+GROUP_MARKER_TO_SECTION_KEY = {
+    _section.group_marker: _section.key
+    for _section in ALL_CONFIGURED_SECTIONS
+    if _section.group_marker
+}
+
+
 def read_project_rows(ws: Worksheet, cmap: ColumnMap) -> List[ProjectRow]:
     """Read every genuine data row from the sheet.
 
@@ -394,41 +455,31 @@ def read_project_rows(ws: Worksheet, cmap: ColumnMap) -> List[ProjectRow]:
     current_section = None
     for r in range(start, ws.max_row + 1):
 
-        first_cell = ws.cell(r, 1).value
+        first_cell = ws.cell(r, cmap.name).value
         sub_group_val = ws.cell(r, cmap.sub_group).value if cmap.sub_group else None
+        group_val_for_marker = ws.cell(r, cmap.group).value if cmap.group else None
 
         # Section-heading detection below only applies to rows that are
         # structurally headings -- every genuine heading/banner/subtotal
         # row on this sheet has a blank Sub-Group, while every genuine
         # data row has a populated one (verified across every
         # "Sales by Customer- <year>" sheet in every available master
-        # workbook). Without this guard, a DATA row whose own Name
-        # happens to contain one of these keywords -- e.g. "MetaSys
-        # Staffing Reports Wendy", a genuine Investments-section row --
-        # gets misread as if it were a new section heading, corrupting
-        # `current_section` for itself and every row after it until the
-        # next real heading. When there's no Sub-Group column at all
-        # (`cmap.sub_group is None`), this is vacuously true for every
-        # row, leaving that fallback path's behavior unchanged.
+        # workbook). Without this guard, a DATA row whose own Group
+        # happens to exactly equal a marker string would be misread as
+        # a new section heading. When there's no Sub-Group column at
+        # all (`cmap.sub_group is None`), this is vacuously true for
+        # every row, leaving that fallback path's behavior unchanged.
         is_heading_candidate = cmap.sub_group is None or is_blank(sub_group_val)
 
-        if is_heading_candidate and isinstance(first_cell, str):
-            text = first_cell.strip().lower()
-
-            if "solutions and staff augmentation" in text:
-                current_section = "projects_track1"
-
-            elif "staffing" in text:
-                current_section = "staffing_secured"
-
-            elif "investment" in text:
-                current_section = "investments"
-
-            elif "track 1" in text and "projection" in text:
-                current_section = "projects_track1_projection"
-
-            elif "track 2" in text and "projection" in text:
-                current_section = "projects_track2_projection"
+        if is_heading_candidate and group_val_for_marker in GROUP_MARKER_TO_SECTION_KEY:
+            # The ONLY classification signal used: this row's Group
+            # column value, matched exactly against a configured
+            # section's `group_marker`. Heading text (first_cell,
+            # above) is never inspected here -- it is purely
+            # presentation and may be renamed freely without affecting
+            # classification. Row position, sheet order, and DS-code
+            # play no role either.
+            current_section = GROUP_MARKER_TO_SECTION_KEY[group_val_for_marker]
 
         name_val = ws.cell(r, cmap.name).value
         group_val = ws.cell(r, cmap.group).value if cmap.group else None
@@ -492,11 +543,36 @@ def read_project_rows(ws: Worksheet, cmap: ColumnMap) -> List[ProjectRow]:
 # ==========================================================================
 # Top level convenience wrapper
 # ==========================================================================
+MAX_UNCOMPRESSED_WORKBOOK_BYTES = 500 * 1024 * 1024  # 500 MB
+
+
+class WorkbookTooLargeError(Exception):
+    """Raised when a workbook's declared uncompressed size exceeds a
+    sane threshold -- checked cheaply (from the zip's own central
+    directory, without extracting anything) before attempting the
+    full, memory-intensive openpyxl parse. Mitigates zip-bomb-style
+    files: a small, highly-compressed .xlsx that would otherwise
+    consume excessive memory/time once fully parsed."""
+
+
+def _check_uncompressed_size(path: str) -> None:
+    import zipfile
+    with zipfile.ZipFile(path) as zf:
+        total = sum(info.file_size for info in zf.infolist())
+    if total > MAX_UNCOMPRESSED_WORKBOOK_BYTES:
+        raise WorkbookTooLargeError(
+            f"Workbook's declared uncompressed size ({total / (1024*1024):.1f} MB) "
+            f"exceeds the {MAX_UNCOMPRESSED_WORKBOOK_BYTES / (1024*1024):.0f} MB limit -- "
+            f"refusing to parse."
+        )
+
+
 class MasterWorkbook:
     """Thin convenience wrapper around an opened Master workbook."""
 
     def __init__(self, path: str):
         self.path = path
+        _check_uncompressed_size(path)
         logger.info("Loading workbook: %s", path)
         self.wb = load_workbook(path, data_only=True)
 
@@ -591,6 +667,7 @@ NO_MATCHING_ROWS: Tuple[int, int] = (-2, -1)
 
 def disambiguate_shared_ds_code_sections(
     ws: Worksheet, sections: List["config.OutputSection"], name_col: int = 1,
+    group_col: Optional[int] = None,
 ) -> List["config.OutputSection"]:
     """Return a COPY of `sections` where any section whose `ds_codes`
     overlap with another section's `ds_codes` gets its `row_range`
@@ -601,18 +678,19 @@ def disambiguate_shared_ds_code_sections(
     other's rows too. Sections whose `ds_codes` are unique are
     returned completely unchanged.
 
-    For each section needing disambiguation, its own `title` text is
-    searched for verbatim in the sheet's own Name column (`name_col`,
-    resolved dynamically from that sheet's header via `build_column_map`
-    -- never hardcoded to column A, since a differently-ordered source
-    sheet may have Name anywhere) to find where its block starts on
-    THIS specific workbook; its row_range runs from just after that row
-    to just before whichever OTHER disambiguated section's own title
-    row comes next (in `sections`' own order), or to the end of the
-    sheet if none does. Never a hardcoded pair of row numbers -- purely
-    derived from what's actually in `ws`.
+    For each section needing disambiguation, its block start on THIS
+    specific workbook is found by its `group_marker` (the Group column
+    value on that heading row -- the same, sole source of truth
+    `read_project_rows` uses), never by heading text. Its row_range
+    runs from just after that row to just before whichever OTHER
+    disambiguated section's own marker row comes next (in `sections`'
+    own order), or to the end of the sheet if none does. Never a
+    hardcoded pair of row numbers -- purely derived from what's
+    actually in `ws`. If `group_col` isn't available (a workbook with
+    no Group column at all), falls back to the old heading-text
+    search against `section.title`, for backward compatibility.
 
-    A section whose own title text can't be found in `ws` at all (a
+    A section whose own marker can't be found in `ws` at all (a
     different source workbook's layout, missing that section entirely)
     gets a row_range that can never match any real row, rather than
     being left unrestricted -- so it safely produces zero rows instead
@@ -627,8 +705,17 @@ def disambiguate_shared_ds_code_sections(
     if not needs_disambiguation:
         return sections
 
+    def _find_section_start(section: "config.OutputSection") -> Optional[int]:
+        if group_col and section.group_marker:
+            for row in range(1, ws.max_row + 1):
+                if ws.cell(row=row, column=group_col).value == section.group_marker:
+                    return row
+            return None
+        # Fallback: no Group column available on this sheet at all.
+        return _find_row_by_exact_label(ws, section.title, name_col)
+
     title_rows: Dict[str, Optional[int]] = {
-        section.key: _find_row_by_exact_label(ws, section.title, name_col) for section in needs_disambiguation
+        section.key: _find_section_start(section) for section in needs_disambiguation
     }
 
     result: List["config.OutputSection"] = []

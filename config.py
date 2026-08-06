@@ -129,6 +129,24 @@ class OutputSection:
     # project"). Only that section sets this False; every other
     # section keeps Rule 6's existing behavior unchanged.
     skip_blank_groups: bool = True
+    # NEW: which grand total this section contributes to. "secured" ->
+    # summed into TOTAL Secured; "prospecting" -> summed into TOTAL
+    # Prospecting; None -> contributes to neither (e.g. Investments).
+    # summary_writer.py builds both grand-total formulas by scanning
+    # every configured section for this field -- no formula anywhere
+    # names a fixed number of terms or a fixed section list.
+    category: Optional[str] = None
+    # The ONLY source of truth for section classification. A row is
+    # recognized as this section's start when its Sub-Group is blank
+    # AND its Group column value exactly equals this string -- checked
+    # anywhere on the sheet, independent of row position, heading text,
+    # or section ordering. excel_reader.py's classifier is built
+    # entirely from these markers across every configured section;
+    # adding a new section here is sufficient, nothing in
+    # excel_reader.py needs to change. Heading text (the "Name"/first
+    # column on these same rows) is display-only and never inspected
+    # for classification.
+    group_marker: Optional[str] = None
 
 
 OUTPUT_SECTIONS: List[OutputSection] = [
@@ -144,6 +162,22 @@ OUTPUT_SECTIONS: List[OutputSection] = [
         blank_rows_after_title=0,     # title immediately followed by first data row
         blank_rows_after_data=1,      # one blank row before the subtotal
         blank_rows_after_subtotal=1,  # one blank row before the next section
+        category="secured",
+        group_marker="Track 1-Secured",
+    ),
+    OutputSection(
+        key="projects_track2",
+        heading=None,
+        title="Solutions and Staff Augmentation (Projects) - Track 2",
+        subtotal_label="Subtotal : Track 2",
+        ds_codes=[20],
+        show_poc=False,
+        sort_alphabetically=True,
+        blank_rows_after_title=0,
+        blank_rows_after_data=1,
+        blank_rows_after_subtotal=1,
+        category="secured",
+        group_marker="Track 2-Secured",
     ),
     OutputSection(
         key="staffing_secured",
@@ -160,6 +194,8 @@ OUTPUT_SECTIONS: List[OutputSection] = [
         blank_rows_after_title=1,     # one blank row before the first data row
         blank_rows_after_data=1,      # one blank row before the subtotal (matches every other section)
         blank_rows_after_subtotal=1,  # one blank row before "Investments" (no longer the last section)
+        category="secured",
+        group_marker="Staffing-Secured",
     ),
     OutputSection(
         key="investments",
@@ -187,6 +223,8 @@ OUTPUT_SECTIONS: List[OutputSection] = [
         # need to appear (Rule 6's "skip a $0 group" default assumption
         # -- no real activity -- doesn't hold for this section).
         skip_blank_groups=False,
+        category=None,
+        group_marker="Investments",
     ),
 ]
 
@@ -229,6 +267,8 @@ WORKSHEET2_ADDITIONAL_SECTIONS: List[OutputSection] = [
         blank_rows_after_title=0,
         blank_rows_after_data=1,
         blank_rows_after_subtotal=1,
+        category="prospecting",
+        group_marker="Track 1-Projections",
     ),
     OutputSection(
         key="projects_track2_projection",
@@ -241,6 +281,8 @@ WORKSHEET2_ADDITIONAL_SECTIONS: List[OutputSection] = [
         blank_rows_after_title=0,
         blank_rows_after_data=1,
         blank_rows_after_subtotal=0,  # last section on Worksheet 2
+        category="prospecting",
+        group_marker="Track 2-Projections",
     ),
 ]
 
@@ -335,17 +377,58 @@ SUBTOTAL_FILL = "FFCCFFFF"
 TOTAL_MARGIN_HEADER_FILL = "FFFFFF00"
 TOTAL_DATA_FILL = "FFB4E5A2"
 MARGIN_DATA_FILL = "FFF6C6AD"
-# FINAL_MARGIN_DATA_FILL (green) applies only to the one Margin column
-# that sits immediately before Comments (Worksheet 1's `col_current_
-# margin`) or Confidence (Worksheet 2's `col_margin`) -- i.e. the
-# final/current-period Margin figure, never the prior-year or
-# quarterly/monthly per-period Margin columns, which keep
-# MARGIN_DATA_FILL's original orange. Deliberately the exact same
-# shade as TOTAL_DATA_FILL (referenced directly, not just copied, so
-# the two can never drift apart if TOTAL_DATA_FILL is ever changed).
-FINAL_MARGIN_DATA_FILL = TOTAL_DATA_FILL
 BORDER_COLOR = "FF000000"  # thin black border applied to every populated cell
 # Column widths are no longer configured as fixed constants here --
 # Worksheets 1/2/3 are all sized to their actual content, after the
 # whole workbook is built, by column_autofit.py (see
 # SummaryWriter.autofit_worksheets in main.py/gui/runner.py).
+
+# --------------------------------------------------------------------------
+# Config self-validation
+# --------------------------------------------------------------------------
+# Every section's `category` must be one of these two values, or None
+# (None is a legitimate, existing state -- e.g. "investments" -- meaning
+# the section contributes to neither grand total; it is not an error).
+ALLOWED_CATEGORIES = ("secured", "prospecting")
+
+
+def validate_config() -> List[str]:
+    """Check OUTPUT_SECTIONS + WORKSHEET2_ADDITIONAL_SECTIONS for
+    internal consistency. Returns a list of human-readable error
+    strings (empty if everything is consistent). Collects every
+    problem found rather than stopping at the first, so a person
+    fixing config.py sees every issue in one pass rather than
+    one-at-a-time across repeated runs.
+
+    Called once, by main.py, at the very start of the program --
+    before any workbook is opened -- so a config mistake is caught
+    before any processing happens, not discovered later as a wrong
+    number in a generated report.
+    """
+    errors: List[str] = []
+    all_sections = list(OUTPUT_SECTIONS) + list(WORKSHEET2_ADDITIONAL_SECTIONS)
+
+    seen_markers: Dict[str, str] = {}  # marker -> first section key that used it
+    for section in all_sections:
+        if section.group_marker is None:
+            continue
+        if section.group_marker in seen_markers:
+            errors.append(f"Duplicate group_marker: {section.group_marker}")
+        else:
+            seen_markers[section.group_marker] = section.key
+
+    seen_keys: set = set()
+    for section in all_sections:
+        if section.key in seen_keys:
+            errors.append(f"Duplicate section key: {section.key}")
+        else:
+            seen_keys.add(section.key)
+
+    for section in all_sections:
+        if section.category is not None and section.category not in ALLOWED_CATEGORIES:
+            errors.append(f"Invalid category: {section.category}")
+
+    return errors
+
+
+

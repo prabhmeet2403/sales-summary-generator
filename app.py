@@ -159,7 +159,11 @@ def _resolve_upload_state() -> None:
         if st.session_state.get("_upload_fingerprint") != fingerprint:
             _reset_for_new_upload()
             tmp = tempfile.mkdtemp(prefix="sfae_streamlit_")
-            master_path = os.path.join(tmp, new_file.name)
+            # os.path.basename strips any directory components/".."
+            # traversal sequences from the client-supplied filename --
+            # otherwise a crafted filename could write outside `tmp`.
+            safe_name = os.path.basename(new_file.name) or "uploaded_workbook.xlsx"
+            master_path = os.path.join(tmp, safe_name)
             with open(master_path, "wb") as fh:
                 fh.write(new_file.getvalue())
             st.session_state["tmp_dir"] = tmp

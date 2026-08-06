@@ -63,7 +63,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.formatting.rule import FormulaRule
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.views import Selection
 from openpyxl.worksheet.worksheet import Worksheet
@@ -78,6 +77,25 @@ THIN_BLACK_BORDER = Border(
     top=Side(style="thin", color=config.BORDER_COLOR),
     bottom=Side(style="thin", color=config.BORDER_COLOR),
 )
+
+
+FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _sanitize_untrusted_text(value):
+    """Neutralize formula injection (CWE-1236): any user-controlled
+    text (customer name, POC, comments, confidence) that starts with a
+    character Excel/other spreadsheet apps treat as a formula trigger
+    is prefixed with a single quote, so it is written and displayed as
+    literal text instead of being interpreted (and potentially
+    executed) as a live formula when the workbook is opened. Only
+    applied at the specific points where source-workbook-controlled
+    text is written to output cells -- never to this application's own
+    internal labels (e.g. "Subtotal : Track 1"), which are safe,
+    hardcoded strings, not user input."""
+    if isinstance(value, str) and value.startswith(FORMULA_TRIGGER_CHARS):
+        return "'" + value
+    return value
 
 
 def _sum_formula_cached_value(ws: Worksheet, formula: str) -> float:
@@ -510,10 +528,27 @@ class SummaryWriter:
         # source for each TOTAL row below, not just the SUM-formula
         # source they already were. Same single source of truth either
         # way: never a fixed row number or offset.
-        track1_row = self._find_row_by_label(ws2, "Subtotal : Track 1")
-        staffing_row = self._find_row_by_label(ws2, "Subtotal : Staffing- Secured")
-        track1_proj_row = self._find_row_by_label(ws2, "Subtotal : Track 1 (Projection)")
-        track2_proj_row = self._find_row_by_label(ws2, "Subtotal : Track 2 (Projection)")
+        # Dynamically resolve every configured section's subtotal row,
+        # grouped by `category` -- TOTAL Secured sums every "secured"
+        # section's subtotal, TOTAL Prospecting sums every
+        # "prospecting" one. Adding a new section to config.py (with
+        # its own category) is sufficient to have it included in the
+        # correct grand total; nothing here names a fixed count or a
+        # fixed list of sections.
+        secured_rows: list = []
+        prospecting_rows: list = []
+        for _section in list(config.OUTPUT_SECTIONS) + list(config.WORKSHEET2_ADDITIONAL_SECTIONS):
+            _row = self._find_row_by_label(ws2, _section.subtotal_label)
+            if _row is None:
+                continue
+            if _section.category == "secured":
+                secured_rows.append(_row)
+            elif _section.category == "prospecting":
+                prospecting_rows.append(_row)
+        # Kept for the format-source lookups just below (last section
+        # in each category -- unchanged visual behavior from before).
+        staffing_row = secured_rows[-1] if secured_rows else None
+        track2_proj_row = prospecting_rows[-1] if prospecting_rows else None
 
         for label in ("TOTAL Secured", "TOTAL Prospecting"):
             dest_row = self._find_row_by_label(ws2, label)
@@ -637,23 +672,17 @@ class SummaryWriter:
                 if logical_key == "group":
                     continue
 
-                # Confidence should be blank on TOTAL rows.
-                if logical_key == "confidence":
-                    dest_cell.value = None
-
-                # TOTAL Secured = Track 1 + Staffing Secured
-                elif label == "TOTAL Secured" and track1_row and staffing_row:
+                # TOTAL Secured = sum of every "secured"-category section's subtotal
+                if label == "TOTAL Secured" and secured_rows:
                     col_letter = get_column_letter(dest_col)
-                    dest_cell.value = (
-                        f"={col_letter}{track1_row}+{col_letter}{staffing_row}"
-                    )
+                    formula = f"=SUM({','.join(f'{col_letter}{r}' for r in secured_rows)})"
+                    self._write_sum_formula(ws2, dest_row, dest_col, formula)
 
-                # TOTAL Prospecting = Track 1 Projection + Track 2 Projection
-                elif label == "TOTAL Prospecting" and track1_proj_row and track2_proj_row:
+                # TOTAL Prospecting = sum of every "prospecting"-category section's subtotal
+                elif label == "TOTAL Prospecting" and prospecting_rows:
                     col_letter = get_column_letter(dest_col)
-                    dest_cell.value = (
-                        f"={col_letter}{track1_proj_row}+{col_letter}{track2_proj_row}"
-                    )
+                    formula = f"=SUM({','.join(f'{col_letter}{r}' for r in prospecting_rows)})"
+                    self._write_sum_formula(ws2, dest_row, dest_col, formula)
 
                 # Everything else stays as before
                 else:
@@ -989,9 +1018,9 @@ class SummaryWriter:
 
     def _write_group_row(self, ws: Worksheet, row: int, group: GroupSummary, show_poc: bool) -> None:
         self._content_rows.append(row)
-        ws.cell(row=row, column=self.col_name, value=group.group_name)
-        if group.poc:
-            ws.cell(row=row, column=self.col_poc, value=group.poc)
+        ws.cell(row=row, column=self.col_name, value=_sanitize_untrusted_text(group.group_name))
+        if show_poc and group.poc:
+            ws.cell(row=row, column=self.col_poc, value=_sanitize_untrusted_text(group.poc))
 
         total_fill = PatternFill("solid", fgColor=config.TOTAL_DATA_FILL)
         margin_fill = PatternFill("solid", fgColor=config.MARGIN_DATA_FILL)
@@ -1033,14 +1062,10 @@ class SummaryWriter:
         # only how the value is expressed on the sheet.
         self._write_sum_formula(ws, row, self.col_current_margin, f"=SUM({','.join(margin_col_refs)})")
         ws.cell(row=row, column=self.col_current_total).fill = total_fill
-        # The one Margin column that sits immediately before Comments
-        # gets the green fill; every other Margin column above (prior-
-        # year, quarterly) keeps the original orange `margin_fill`.
-        final_margin_fill = PatternFill("solid", fgColor=config.FINAL_MARGIN_DATA_FILL)
-        ws.cell(row=row, column=self.col_current_margin).fill = final_margin_fill
+        ws.cell(row=row, column=self.col_current_margin).fill = margin_fill
 
         if group.comment:  # Rule 6: comment blanks stay blank
-            c = ws.cell(row=row, column=self.col_comments, value=group.comment)
+            c = ws.cell(row=row, column=self.col_comments, value=_sanitize_untrusted_text(group.comment))
             # `wrap_text` is deliberately left off here: turning it on
             # is what makes Excel auto-expand a row's height to fit a
             # long comment (Excel's own built-in behavior for any
@@ -1093,82 +1118,6 @@ class SummaryWriter:
 
         ws.freeze_panes = "A4"
         ws.sheet_view.showGridLines = False
-
-        # Explicitly requested merged-cell removal (not row grouping --
-        # that was a wrong terminology guess and has been reverted).
-        # Rows 4 and 6 are the only hardcoded row references here.
-        self._unmerge_preserving_style(ws, (4, 6))
-
-        # Conditional formatting: negative values show in red font. Uses
-        # an explicit formula rule (e.g. `=N4<0`, anchored to each
-        # range's own top-left cell so Excel applies it relatively row
-        # by row -- the same mechanism "New Rule > Use a formula to
-        # determine which cells to format" produces manually) rather
-        # than a `cellIs`-type rule, which depends on Excel inferring
-        # operator semantics and has documented real-world reliability
-        # issues that a plain formula does not share. Only the font
-        # color is specified in the rule, so it layers on top of
-        # whatever font (including bold, on subtotal/TOTAL rows) a cell
-        # already has; zero/positive values are left completely as they
-        # already are. Scoped to only `col_current_total`/
-        # `col_current_margin` -- the two columns immediately before
-        # Comments -- not every Total/Margin column on the sheet
-        # (prior-year and quarterly columns are deliberately left out).
-        # Range is `4..last_row`, the same dynamic bound already used
-        # for currency formatting above.
-        for col in (self.col_current_total, self.col_current_margin):
-            letter = get_column_letter(col)
-            ws.conditional_formatting.add(
-                f"{letter}4:{letter}{last_row}",
-                FormulaRule(formula=[f"{letter}4<0"], font=Font(color="FFFF0000")),
-            )
-
-    @staticmethod
-    def _unmerge_preserving_style(ws: Worksheet, rows) -> None:
-        """Unmerge every merged range on `ws` that intersects any row in
-        `rows`, without losing any cell's existing formatting.
-
-        `Worksheet.unmerge_cells()` (confirmed directly from openpyxl's
-        own source) does `del self._cells[(row, col)]` for every cell in
-        the range except the anchor -- it does not just drop the merge,
-        it discards those cells entirely, so the next access recreates
-        them from scratch with no fill/border/font/alignment/number
-        format at all. Capturing each cell's style beforehand and
-        reapplying it afterward is the only way to unmerge without that
-        loss. The anchor cell is never deleted, so restoring its
-        (already-correct) style back onto itself is a harmless no-op.
-        Only the merge state changes; nothing here touches values,
-        fills, borders, fonts, alignment, or row height beyond
-        restoring exactly what was already there.
-        """
-        for merged_range in list(ws.merged_cells.ranges):
-            if not any(merged_range.min_row <= r <= merged_range.max_row for r in rows):
-                continue
-            captured = {}
-            for row in range(merged_range.min_row, merged_range.max_row + 1):
-                for col in range(merged_range.min_col, merged_range.max_col + 1):
-                    cell = ws.cell(row=row, column=col)
-                    # `copy()` is required here, not optional: a
-                    # non-anchor merged cell's `.fill`/`.border`/`.font`/
-                    # `.alignment` are `StyleProxy`-wrapped and unhashable,
-                    # which raises when later reassigned directly (openpyxl
-                    # deduplicates styles internally via a hashable-keyed
-                    # list) -- `copy()` converts each into a plain,
-                    # independent, hashable style object with the same
-                    # values, exactly the pattern already used elsewhere
-                    # in this file (see `apply_cross_sheet_total_rows`).
-                    captured[(row, col)] = (
-                        copy(cell.fill), copy(cell.border), copy(cell.font),
-                        copy(cell.alignment), cell.number_format,
-                    )
-            ws.unmerge_cells(str(merged_range))
-            for (row, col), (fill, border, font, alignment, number_format) in captured.items():
-                cell = ws.cell(row=row, column=col)
-                cell.fill = fill
-                cell.border = border
-                cell.font = font
-                cell.alignment = alignment
-                cell.number_format = number_format
 
     def _apply_borders(self, ws: Worksheet) -> None:
         """Feature 1: thin black border on every populated cell -- every
@@ -1321,13 +1270,9 @@ class SummaryWriter:
             data_start = current_row
             total_fill = PatternFill("solid", fgColor=config.TOTAL_DATA_FILL)
             margin_fill = PatternFill("solid", fgColor=config.MARGIN_DATA_FILL)
-            # The one Margin column that sits immediately before
-            # Confidence gets this green fill; every monthly Margin
-            # column uses the orange `margin_fill` above instead.
-            final_margin_fill = PatternFill("solid", fgColor=config.FINAL_MARGIN_DATA_FILL)
             for g in groups:
                 content_rows.append(current_row)
-                ws2.cell(row=current_row, column=col_name, value=g.group_name)
+                ws2.cell(row=current_row, column=col_name, value=_sanitize_untrusted_text(g.group_name))
                 # POC is always shown on Worksheet 2 when available, regardless
                 # of Worksheet 1's per-section `show_poc` flag. That flag
                 # governs Worksheet 1's own presentation (e.g. Track 1 hides
@@ -1336,7 +1281,7 @@ class SummaryWriter:
                 # business-provided screenshot, which populate POC for every
                 # Track 1 row. See audit finding #1.
                 if g.poc:
-                    ws2.cell(row=current_row, column=col_poc, value=g.poc)
+                    ws2.cell(row=current_row, column=col_poc, value=_sanitize_untrusted_text(g.poc))
 
                 value_refs: List[str] = []
                 margin_refs: List[str] = []
@@ -1365,13 +1310,10 @@ class SummaryWriter:
                 else:
                     ws2.cell(row=current_row, column=col_margin, value=0)
                 ws2.cell(row=current_row, column=col_total).fill = total_fill
-                # The one Margin column that sits immediately before
-                # Confidence gets the green fill; every monthly Margin
-                # column above keeps the original orange `margin_fill`.
-                ws2.cell(row=current_row, column=col_margin).fill = final_margin_fill
+                ws2.cell(row=current_row, column=col_margin).fill = margin_fill
 
                 if g.confidence:
-                    conf_cell = ws2.cell(row=current_row, column=col_confidence, value=g.confidence)
+                    conf_cell = ws2.cell(row=current_row, column=col_confidence, value=_sanitize_untrusted_text(g.confidence))
                     # `g.confidence` is a percentage-like STRING (e.g.
                     # "100%"), so it defaults to Excel's left-aligned
                     # text behavior with no alignment set at all --
@@ -1381,7 +1323,7 @@ class SummaryWriter:
                     # the short, uniform-width values it holds.
                     conf_cell.alignment = Alignment(horizontal="center", vertical="center")
                 if g.comment:
-                    c = ws2.cell(row=current_row, column=col_comments, value=g.comment)
+                    c = ws2.cell(row=current_row, column=col_comments, value=_sanitize_untrusted_text(g.comment))
                     # Same as Worksheet 1's comment cells: `wrap_text`
                     # deliberately left off, since turning it on is
                     # what makes Excel auto-expand a row's height to
@@ -1496,23 +1438,6 @@ class SummaryWriter:
 
         ws2.freeze_panes = "A3"
         ws2.sheet_view.showGridLines = False
-
-        # Explicitly requested merged-cell removal (not row grouping --
-        # reverted; reuses the same helper Worksheet 1 uses above).
-        # Rows 3 and 5 are the only hardcoded row references here.
-        self._unmerge_preserving_style(ws2, (3, 5))
-
-        # Conditional formatting -- mirrors Worksheet 1's addition above
-        # exactly (see its comment for why FormulaRule, not CellIsRule):
-        # only `col_total`/`col_margin` (the two columns immediately
-        # before Confidence), not the 12 monthly Total/Margin columns,
-        # across rows 3 through `last_row`.
-        for col in (col_total, col_margin):
-            letter = get_column_letter(col)
-            ws2.conditional_formatting.add(
-                f"{letter}3:{letter}{last_row}",
-                FormulaRule(formula=[f"{letter}3<0"], font=Font(color="FFFF0000")),
-            )
 
         # -- Borders (Feature 1, mirrored) ------------------------------
         for row in content_rows:

@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: nvish-sales-summary-generator
+    runtime: python
+    plan: starter
+    region: oregon
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
+      # --- Secrets: values must be set in the Render dashboard, never
+      # committed to source control or written into this file. Adding
+      # a key here with no `value` (and no `sync: false`) creates the
+      # variable in the Render UI with a blank value for you to fill
+      # in after the first deploy -- see DEPLOYMENT.md.
+      - key: BEDROCK_REGION
+        sync: false
+      - key: BEDROCK_MODEL_ID
+        sync: false
+      - key: AWS_BEARER_TOKEN_BEDROCK
+        sync: false
+    healthCheckPath: /
+    autoDeploy: true

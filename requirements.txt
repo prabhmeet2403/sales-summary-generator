@@ -1,0 +1,33 @@
+openpyxl>=3.1.2
+
+# --- Desktop GUI (gui_main.py) ---
+ttkbootstrap>=1.10.1
+Pillow>=10.0.0
+
+# --- Packaging the GUI as a standalone .exe ---
+pyinstaller>=6.0.0
+
+# --- Streamlit web app (app.py) ---
+streamlit>=1.35.0,<2.0.0
+# streamlit-js-eval: minimal bridge to read one value back from the
+# browser (its local date/time for the download filename -- see
+# app.py's _run_generation/_render_result). Streamlit's Python backend
+# has no other way to learn the browser's timezone; this is the
+# smallest widely-used mechanism for it (a thin wrapper around
+# Streamlit's own custom-component protocol, no separate JS build step
+# required by this app).
+streamlit-js-eval>=0.1.7
+
+# --- Phase 2: AI Assistant platform (ai/) ---
+# boto3: Amazon Bedrock client (ai/llm/providers/bedrock.py)
+#   >=1.40.0 for Bedrock bearer-token authentication support
+#   (AWS_BEARER_TOKEN_BEDROCK, via botocore's generic bearer-token
+#   credential resolution). Confirmed present in 1.43.41.
+# pandas: the DataFrame query layer (ai/data/frames.py, ai/data/filters.py)
+# python-dotenv: loads .env into the environment on startup (app.py),
+#   for local development convenience only -- a real deployment sets
+#   these as actual environment variables and does not need a .env file.
+boto3>=1.40.0
+pandas>=2.1.0
+python-dotenv>=1.0.0
+

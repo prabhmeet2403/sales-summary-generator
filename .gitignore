@@ -1,0 +1,29 @@
+# Secrets -- never commit real credentials.
+.env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.pytest_cache/
+*.egg-info/
+venv/
+.venv/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Generated output (kept local; not part of the source tree)
+output/*.xlsx
+logs/*.log
+logs/*.txt
+
+# OS / editor clutter
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

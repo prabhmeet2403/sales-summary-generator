@@ -1,0 +1,788 @@
+/* ==========================================================
+   SFAE Enterprise Design System
+   Pure ASCII. Compatible with all OS locales (no cp1252 issues).
+   ========================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* -- Tokens ------------------------------------------------- */
+:root {
+  --font:      'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --tx1:       #0F172A;
+  --tx2:       #334155;
+  --tx3:       #64748B;
+  --tx4:       #94A3B8;
+  --bg:        #F5F7FA;
+  --surface:   #FFFFFF;
+  --surface2:  #F8FAFC;
+  --border:    #E2E8F0;
+  --border2:   #CBD5E1;
+  --accent:    #0057B8;
+  --accent-h:  #00468F;
+  --accent-bg: #EEF4FC;
+  --accent-bd: #C7DCF5;
+  --ok:        #16803C;
+  --ok-bg:     #DCFCE7;
+  --ok-bd:     #86EFAC;
+  --warn:      #B45309;
+  --warn-bg:   #FEF3C7;
+  --err:       #B91C1C;
+  --err-bg:    #FEE2E2;
+  --nav:       #111827;
+  --nav2:      #1F2937;
+  --nav-tx:    #D1D5DB;
+  --nav-dim:   #6B7280;
+  --nav-act:   rgba(59,130,246,0.18);
+  --nav-act-tx:#93C5FD;
+  --nav-hover: rgba(255,255,255,0.06);
+  --nav-div:   rgba(255,255,255,0.09);
+  --r:  6px;
+  --rm: 8px;
+  --rl: 10px;
+  --sh1: 0 1px 2px rgba(15,23,42,0.05);
+  --sh2: 0 2px 6px rgba(15,23,42,0.09), 0 0 0 1px rgba(15,23,42,0.04);
+}
+
+/* -- Global -------------------------------------------------- */
+html, body, [data-testid="stApp"],
+[data-testid="stAppViewContainer"] {
+  font-family: var(--font) !important;
+  background:  var(--bg)  !important;
+  color:       var(--tx1) !important;
+}
+
+/* -- Strip Streamlit chrome ---------------------------------- */
+#MainMenu, footer,
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="stToolbarActions"],
+[data-testid="stSidebarHeader"],
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stSidebarNav"],
+[data-testid="stSidebarNavItems"],
+.stDeployButton, [data-testid="stAppDeployButton"] { display: none !important; }
+
+[data-testid="stHeader"] {
+  background: transparent !important;
+  height: 0 !important;
+  min-height: 0 !important;
+}
+
+/* -- Sidebar shell ------------------------------------------- */
+[data-testid="stSidebar"] {
+  background:   var(--nav) !important;
+  border-right: 1px solid var(--nav-div) !important;
+  min-width: 256px !important;
+  max-width: 256px !important;
+  width:     256px !important;
+}
+[data-testid="stSidebar"] > div:first-child {
+  padding:   0 !important;
+  width:     256px !important;
+  min-width: 256px !important;
+}
+[data-testid="stSidebarUserContent"],
+[data-testid="stSidebarUserContent"] > div { padding: 0 !important; }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: 0 !important; }
+/* Streamlit applies a built-in negative bottom margin to markdown
+   containers (part of its default vertical-rhythm system). Our layout
+   controls spacing entirely through its own CSS (.card, .stat-tile,
+   .src-row, etc.), so this default is reset globally to avoid it
+   pulling adjacent blocks upward and causing visible overlap. */
+[data-testid="stMarkdownContainer"] { margin: 0 !important; }
+
+[data-testid="stSidebar"] [data-testid="element-container"],
+[data-testid="stSidebar"] [data-testid="stElementContainer"] { margin: 0 !important; }
+
+/* -- Sidebar: brand ------------------------------------------ */
+/* Compact: 14px top/bottom padding keeps total height ~50px */
+.sb-brand {
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--nav-div);
+  display: flex; align-items: center; gap: 9px;
+}
+.sb-mark {
+  width: 28px; height: 28px;
+  background: linear-gradient(135deg, #1D4ED8, #2563EB);
+  border-radius: 7px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800; color: #fff;
+  box-shadow: 0 2px 5px rgba(37,99,235,0.4);
+}
+.sb-name { font-size: 13.5px; font-weight: 700; color: #fff; letter-spacing: -0.01em; }
+.sb-sub  { font-size: 9.5px; color: var(--nav-dim); margin-top: 1px; }
+
+/* -- Sidebar: nav section label ------------------------------ */
+/* Compact: 10px top, 4px bottom (saves ~8px per group) */
+.sb-section {
+  padding: 10px 16px 4px;
+  font-size: 9px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--nav-dim);
+}
+
+/* -- Sidebar: nav buttons ------------------------------------ */
+[data-testid="stSidebar"] [data-testid="stButton"] {
+  padding: 0 8px !important;
+  margin:  0 !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton"] > button {
+  background:      transparent !important;
+  border:          none !important;
+  border-radius:   var(--r) !important;
+  color:           var(--nav-tx) !important;
+  font-family:     var(--font) !important;
+  font-size:       13px !important;
+  font-weight:     500 !important;
+  padding:         8px 12px !important;
+  margin:          1px 0 !important;
+  text-align:      left !important;
+  justify-content: flex-start !important;
+  width:           100% !important;
+  box-shadow:      none !important;
+  line-height:     1.3 !important;
+  transition:      background 0.12s !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton"] > button:hover {
+  background: var(--nav-hover) !important;
+  color: #FFFFFF !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton"] > button:focus {
+  box-shadow: none !important; outline: none !important;
+}
+
+/* -- Active nav item via CSS :has() on hidden marker span ---- */
+/* .sb-active-mark is injected as a sibling BEFORE the active button */
+.sb-active-mark { display: none; }
+[data-testid="stSidebar"] [data-testid="element-container"]:has(.sb-active-mark)
+  + [data-testid="element-container"] [data-testid="stButton"] > button,
+[data-testid="stSidebar"] [data-testid="stElementContainer"]:has(.sb-active-mark)
+  + [data-testid="stElementContainer"] [data-testid="stButton"] > button {
+  background:  var(--nav-act) !important;
+  color:       var(--nav-act-tx) !important;
+  font-weight: 600 !important;
+}
+
+/* Sidebar: primary CTA (Generate) */
+[data-testid="stSidebar"] button[kind="primary"] {
+  background:      var(--accent) !important;
+  color:           #fff !important;
+  border:          none !important;
+  justify-content: center !important;
+  font-size:       13px !important;
+  font-weight:     600 !important;
+  padding:         9px 14px !important;
+}
+[data-testid="stSidebar"] button[kind="primary"]:hover { background: var(--accent-h) !important; }
+[data-testid="stSidebar"] button[kind="primary"]:disabled {
+  background: #1E293B !important; color: #475569 !important;
+}
+
+/* Sidebar: divider / labels / file status */
+.sb-div { border: none; border-top: 1px solid var(--nav-div); margin: 8px 0; }
+.sb-lbl {
+  padding: 6px 16px 4px;
+  font-size: 9px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--nav-dim);
+}
+.sb-files { padding: 0 16px 6px; }
+.sb-file  { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 11.5px; color: var(--nav-tx); }
+.sb-dot   { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.sb-dot.ok   { background: #4ADE80; }
+.sb-dot.warn { background: #FBBF24; }
+.sb-dot.miss { background: #374151; border: 1px solid #4B5563; }
+.sb-flbl {
+  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--nav-dim); margin-bottom: 3px;
+}
+
+/* Sidebar: inputs on dark background */
+[data-testid="stSidebar"] [data-testid="stSelectbox"] label,
+[data-testid="stSidebar"] [data-testid="stDateInput"] label { display: none !important; }
+[data-testid="stSidebar"] [data-testid="stSelectbox"],
+[data-testid="stSidebar"] [data-testid="stDateInput"] { margin: 0 0 10px !important; }
+[data-testid="stSidebar"] [data-baseweb="select"] > div {
+  background:    rgba(255,255,255,0.06) !important;
+  border:        1px solid rgba(255,255,255,0.15) !important;
+  border-radius: var(--r) !important;
+  color:         var(--nav-tx) !important;
+  min-height:    36px !important;
+}
+[data-testid="stSidebar"] [data-baseweb="input"] > div {
+  background:    rgba(255,255,255,0.06) !important;
+  border:        1px solid rgba(255,255,255,0.15) !important;
+  border-radius: var(--r) !important;
+}
+[data-testid="stSidebar"] input { color: var(--nav-tx) !important; background: transparent !important; }
+[data-testid="stSidebar"] svg { color: #6B7280 !important; fill: #6B7280 !important; }
+
+/* Sidebar: bordered container (Report Parameters panel) */
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+  border:        1px solid rgba(255,255,255,0.12) !important;
+  border-radius: var(--rm) !important;
+  background:    rgba(255,255,255,0.03) !important;
+  padding:       12px !important;
+  margin:        0 8px !important;
+}
+
+/* Sidebar: download button */
+[data-testid="stSidebar"] [data-testid="stDownloadButton"] > button {
+  background:      rgba(59,130,246,0.1) !important;
+  border:          1px solid rgba(147,197,253,0.3) !important;
+  color:           var(--nav-act-tx) !important;
+  font-size:       12.5px !important; font-weight: 600 !important;
+  justify-content: center !important; width: 100% !important;
+  padding:         9px 12px !important;
+}
+[data-testid="stSidebar"] [data-testid="stDownloadButton"] > button:hover {
+  background: rgba(59,130,246,0.18) !important;
+}
+
+/* Sidebar: footer */
+.sb-footer {
+  padding: 10px 16px;
+  border-top: 1px solid var(--nav-div);
+  font-size: 10px; color: #4B5563;
+  margin-top: 4px;
+}
+
+/* -- Main canvas -------------------------------------------- */
+[data-testid="stMain"],
+[data-testid="stMainBlockContainer"] {
+  background: var(--bg) !important;
+  padding:    0 !important;
+  max-width:  100% !important;
+}
+/* Real side padding so content breathes away from the sidebar */
+.block-container {
+  background: var(--bg) !important;
+  padding:    0 56px 64px !important;
+  max-width:  100% !important;
+}
+[data-testid="stVerticalBlock"] { gap: 0 !important; }
+.block-container > div { padding-top: 0 !important; }
+
+/* -- Top bar ------------------------------------------------- */
+.topbar {
+  background:    var(--surface);
+  border-bottom: 1px solid var(--border);
+  /* Break out of .block-container's 56px side padding; re-apply internally */
+  padding:       0 56px;
+  margin-left:   -56px;
+  margin-right:  -56px;
+  width:         calc(100% + 112px);
+  height:        54px;
+  display:       flex; align-items: center; justify-content: space-between;
+  position:      sticky; top: 0; z-index: 100;
+  font-family:   var(--font);
+}
+.topbar-left { display: flex; align-items: center; }
+.topbar-logo { font-size: 14px; font-weight: 800; color: var(--tx1); letter-spacing: -0.01em; }
+.topbar-logo-img { height: 22px; width: auto; display: block; }
+.topbar-sep  { width: 1px; height: 16px; background: var(--border); margin: 0 12px; }
+.topbar-prod { font-size: 13px; color: var(--tx3); font-weight: 400; }
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+.topbar-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600; color: var(--ok);
+  background: var(--ok-bg); border: 1px solid var(--ok-bd);
+  padding: 3px 10px; border-radius: 20px;
+}
+.topbar-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
+.topbar-org { font-size: 12px; color: var(--tx4); }
+
+/* -- Workspace --------------------------------------------- */
+/* .workspace padding is now handled by .block-container above */
+
+/* -- Page header -------------------------------------------- */
+.page-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+  margin: 32px 0 28px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+.page-title {
+  font-size: 20px !important; font-weight: 700 !important;
+  color: var(--tx1) !important; letter-spacing: -0.02em !important;
+  margin: 0 0 4px !important; line-height: 1.25 !important;
+  font-family: var(--font) !important;
+}
+.page-desc { font-size: 13.5px; color: var(--tx3); margin: 0; line-height: 1.5; }
+.page-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; font-weight: 600; padding: 4px 11px;
+  border-radius: 20px; white-space: nowrap; flex-shrink: 0; margin-top: 2px;
+}
+.page-status.ready { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok-bd); }
+.page-status.ready::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.page-status.idle  { background: var(--surface2); color: var(--tx3); border: 1px solid var(--border); }
+
+/* -- Section label ------------------------------------------ */
+.section-label {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--tx3);
+  margin: 32px 0 16px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font);
+}
+
+/* -- Card ---------------------------------------------------- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--rl);
+  box-shadow: var(--sh1);
+  margin-bottom: 24px;
+  overflow: hidden;
+}
+.card-head {
+  padding: 18px 24px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.card-title    { font-size: 13.5px; font-weight: 650; color: var(--tx1); margin: 0 0 2px; font-family: var(--font); }
+.card-subtitle { font-size: 12px; color: var(--tx3); margin: 0; }
+.card-body     { padding: 24px; }
+.card-body.p0  { padding: 0; }
+
+/* -- KPI metric card ----------------------------------------- */
+.kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--rm);
+  padding: 20px 22px 18px;
+  position: relative; overflow: hidden;
+  box-shadow: var(--sh1);
+  min-height: 100px;
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+.kpi:hover { box-shadow: var(--sh2); transform: translateY(-1px); }
+.kpi::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: var(--kpi-color, var(--accent));
+}
+.kpi-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.kpi-label {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--tx3); margin: 0;
+}
+.kpi-icon { font-size: 13px; opacity: 0.5; }
+.kpi-value {
+  font-size: 22px; font-weight: 760; color: var(--tx1);
+  letter-spacing: -0.025em; margin: 0 0 4px; line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.kpi-delta { font-size: 11.5px; font-weight: 600; margin: 0; }
+.delta-up { color: var(--ok); } .delta-dn { color: var(--err); }
+
+/* -- Upload source row -------------------------------------- */
+.src-row {
+  padding: 20px 22px 8px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.12s;
+}
+.src-row:last-child { border-bottom: none; }
+.src-row.done { background: linear-gradient(to right, rgba(22,128,60,0.04), transparent 20%); }
+.src-head { display: flex; align-items: flex-start; gap: 12px; }
+.src-num {
+  width: 25px; height: 25px; border-radius: 50%; flex-shrink: 0;
+  background: var(--surface2); border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: var(--tx3); margin-top: 1px;
+}
+.src-row.done .src-num { background: var(--ok-bg); border-color: var(--ok-bd); color: var(--ok); }
+.src-info { flex: 1; min-width: 0; }
+.src-title { font-size: 14px; font-weight: 650; color: var(--tx1); margin: 0 0 5px; }
+.src-desc  { font-size: 12.5px; color: var(--tx3); margin: 0 0 9px; line-height: 1.55; max-width: 680px; }
+.src-meta  { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 10px; }
+.src-chip  { font-size: 11.5px; color: var(--tx4); }
+.src-chip strong { color: var(--tx3); font-weight: 600; }
+.src-divider { height: 1px; background: var(--border); margin: 10px 0 10px 37px; opacity: 0.7; }
+.src-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-left: 37px; padding-bottom: 12px; }
+.src-hint   { font-size: 11.5px; color: var(--tx4); font-style: italic; }
+.src-fname  { font-size: 11.5px; color: var(--tx3); }
+
+/* -- Config stat cell (Report Configuration) --------------- */
+.cfg-stat { display: flex; flex-direction: column; gap: 4px; }
+.cfg-label {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--tx3);
+}
+.cfg-value { font-size: 16px; font-weight: 700; color: var(--tx1); font-variant-numeric: tabular-nums; }
+
+/* -- Badges ------------------------------------------------- */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 20px;
+  font-size: 11.5px; font-weight: 600; white-space: nowrap;
+}
+.badge-green { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok-bd); }
+.badge-blue  { background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-bd); }
+.badge-gray  { background: var(--surface2); color: var(--tx3); border: 1px solid var(--border); }
+.badge-amber { background: var(--warn-bg); color: var(--warn); border: 1px solid #FDE68A; }
+.badge-red   { background: var(--err-bg); color: var(--err); border: 1px solid #FECACA; }
+
+/* -- Backward compat aliases used by page render() fns ----- */
+.sfae-section { font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--tx3); margin: 32px 0 16px;
+  padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.sfae-metric { background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--rm); padding: 20px 22px 18px; position: relative;
+  overflow: hidden; box-shadow: var(--sh1); min-height: 100px;
+  transition: box-shadow 0.15s, transform 0.15s; }
+.sfae-metric:hover { box-shadow: var(--sh2); transform: translateY(-1px); }
+.sfae-metric::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: var(--metric-accent, var(--accent)); }
+.sfae-metric-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.sfae-metric-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--tx3); margin: 0; }
+.sfae-metric-icon { font-size: 13px; opacity: 0.5; }
+.sfae-metric-value { font-size: 22px; font-weight: 760; color: var(--tx1);
+  letter-spacing: -0.025em; margin: 0 0 4px; line-height: 1.1;
+  font-variant-numeric: tabular-nums; }
+.sfae-metric-delta { font-size: 11.5px; font-weight: 600; margin: 0; }
+.sfae-dp { color: var(--ok); } .sfae-dn { color: var(--err); }
+.sfae-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px;
+  border-radius: 20px; font-size: 11.5px; font-weight: 600; }
+.sfae-badge-green { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok-bd); }
+.sfae-badge-blue  { background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-bd); }
+.sfae-badge-gray  { background: var(--surface2); color: var(--tx3); border: 1px solid var(--border); }
+.sfae-badge-amber { background: var(--warn-bg); color: var(--warn); border: 1px solid #FDE68A; }
+.sfae-badge-red   { background: var(--err-bg); color: var(--err); border: 1px solid #FECACA; }
+
+/* -- Chart card --------------------------------------------- */
+.chart-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--rl) var(--rl) 0 0; border-bottom: none;
+  padding: 20px 24px 8px; box-shadow: var(--sh1);
+}
+.chart-card h4 { font-size: 13.5px !important; font-weight: 650 !important;
+  color: var(--tx1) !important; margin: 0 0 4px !important; font-family: var(--font) !important; }
+.chart-card p  { font-size: 12px !important; color: var(--tx3) !important;
+  margin: 0 !important; font-family: var(--font) !important; }
+div[data-testid="stPlotlyChart"] {
+  border: 1px solid var(--border); border-top: none;
+  border-radius: 0 0 var(--rl) var(--rl); background: var(--surface);
+  box-shadow: var(--sh1); padding: 8px 14px 14px; margin-bottom: 24px;
+}
+
+/* -- Process log -------------------------------------------- */
+.plog { display: flex; align-items: center; gap: 10px; padding: 9px 0;
+  font-size: 13px; color: var(--tx2);
+  border-bottom: 1px solid var(--border); font-family: var(--font); }
+.plog:last-child { border-bottom: none; }
+.plog-ok  { color: var(--ok); font-size: 15px; font-weight: 800; }
+.plog-err { color: var(--err); font-size: 15px; font-weight: 800; }
+
+/* Live checklist additions: steps not yet reached ("pending") and the
+   one currently running ("active"). Purely presentational states for
+   the Streamlit processing view -- no calculation logic involved. */
+.plog-pending { color: var(--tx4); }
+.plog-pending .plog-icon {
+  display: inline-block; width: 15px; height: 15px; border-radius: 50%;
+  border: 1.5px solid var(--border2); flex-shrink: 0;
+}
+.plog-active { color: var(--tx1); font-weight: 600; }
+.plog-active .plog-icon {
+  display: inline-block; width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid var(--accent-bd); border-top-color: var(--accent);
+  flex-shrink: 0; animation: sfae-spin 0.7s linear infinite;
+}
+@keyframes sfae-spin { to { transform: rotate(360deg); } }
+
+/* -- Compact stat tile (used for Detected Year / Sheets / Groups) --- */
+.stat-tile {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 12px 16px; text-align: left;
+}
+.stat-tile-label {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--tx3); margin: 0 0 4px;
+}
+.stat-tile-value {
+  font-size: 18px; font-weight: 750; color: var(--tx1);
+  font-variant-numeric: tabular-nums; margin: 0; line-height: 1.25;
+}
+.stat-tile-sub { font-size: 11px; color: var(--tx4); margin-top: 2px; }
+
+/* -- Empty state -------------------------------------------- */
+.empty { display: flex; flex-direction: column; align-items: center;
+  justify-content: center; padding: 56px 32px; text-align: center; font-family: var(--font); }
+.empty-icon  { font-size: 28px; margin-bottom: 12px; opacity: 0.3; }
+.empty-title { font-size: 14.5px; font-weight: 650; color: var(--tx2); margin: 0 0 6px; }
+.empty-desc  { font-size: 13px; color: var(--tx3); margin: 0; max-width: 360px; line-height: 1.6; }
+
+/* -- Buttons ------------------------------------------------ */
+[data-testid="stButton"] > button {
+  font-family: var(--font) !important; font-size: 13px !important;
+  font-weight: 600 !important; border-radius: var(--r) !important;
+  padding: 8px 18px !important;
+}
+button[kind="primary"] {
+  background: var(--accent) !important; color: #fff !important;
+  border: 1.5px solid var(--accent) !important;
+}
+button[kind="primary"]:hover { background: var(--accent-h) !important; }
+button[kind="secondary"] {
+  background: var(--surface) !important; color: var(--tx2) !important;
+  border: 1.5px solid var(--border2) !important;
+}
+
+/* -- File uploader ------------------------------------------ */
+[data-testid="stFileUploaderDropzoneInstructions"] { display: none !important; }
+div[data-testid="stFileUploader"] label { display: none !important; }
+div[data-testid="stFileUploader"] { max-width: 380px; }
+[data-testid="stFileUploaderDropzone"] {
+  background: var(--surface2) !important;
+  border: 1.5px dashed var(--border2) !important;
+  border-radius: var(--r) !important; padding: 8px 14px !important;
+  min-height: unset !important;
+}
+[data-testid="stFileUploaderDropzone"]:hover {
+  border-color: var(--accent) !important; background: var(--accent-bg) !important;
+}
+[data-testid="stFileUploaderDropzone"] button {
+  background: var(--surface) !important; border: 1.5px solid var(--border2) !important;
+  color: var(--tx2) !important; font-weight: 600 !important;
+  font-size: 12.5px !important; border-radius: 4px !important;
+}
+[data-testid="stFileUploaderFile"] {
+  background: var(--surface) !important; border: 1px solid var(--border) !important;
+  border-radius: var(--r) !important; margin-top: 6px !important; padding: 5px 10px !important;
+}
+[data-testid="stFileUploaderDeleteBtn"] button { color: var(--tx4) !important; }
+[data-testid="stFileUploaderDeleteBtn"] button:hover { color: var(--err) !important; }
+
+/* -- Tables ------------------------------------------------- */
+[data-testid="stDataFrame"] {
+  border: 1px solid var(--border) !important; border-radius: var(--rm) !important;
+  overflow: hidden !important; box-shadow: var(--sh1);
+}
+[data-testid="stDataFrame"] [role="columnheader"] {
+  background: var(--surface2) !important; font-weight: 700 !important;
+  font-size: 11px !important; text-transform: uppercase !important;
+  letter-spacing: 0.05em !important; color: var(--tx3) !important;
+  border-bottom: 2px solid var(--border2) !important;
+}
+
+/* -- Expander (filter panels) ------------------------------- */
+[data-testid="stExpander"] {
+  border: 1px solid var(--border) !important; border-radius: var(--rm) !important;
+  background: var(--surface) !important; box-shadow: var(--sh1) !important;
+  margin-bottom: 24px !important; overflow: hidden !important;
+}
+[data-testid="stExpander"] summary {
+  padding: 11px 18px !important; font-family: var(--font) !important;
+  font-size: 12.5px !important; font-weight: 600 !important;
+  color: var(--tx2) !important; background: var(--surface2) !important;
+}
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] { padding: 18px 18px 6px !important; }
+
+/* -- Tabs --------------------------------------------------- */
+[data-baseweb="tab-list"] {
+  background: transparent !important; border-bottom: 2px solid var(--border) !important;
+  padding: 0 !important; margin-bottom: 20px !important;
+}
+[data-baseweb="tab"] {
+  font-family: var(--font) !important; font-size: 13px !important;
+  font-weight: 600 !important; color: var(--tx3) !important;
+  padding: 10px 18px !important;
+}
+[aria-selected="true"][data-baseweb="tab"] {
+  color: var(--accent) !important; font-weight: 700 !important;
+  border-bottom: 2.5px solid var(--accent) !important; margin-bottom: -2px !important;
+}
+
+/* -- Form widgets ------------------------------------------- */
+label[data-testid="stWidgetLabel"] {
+  font-family: var(--font) !important; font-size: 12px !important;
+  font-weight: 600 !important; color: var(--tx2) !important;
+}
+[data-baseweb="select"] > div, [data-baseweb="input"] > div {
+  border-radius: var(--r) !important; font-family: var(--font) !important;
+  font-size: 13px !important;
+}
+[data-testid="stAlert"] {
+  border-radius: var(--rm) !important; font-size: 13px !important;
+  font-family: var(--font) !important;
+}
+[data-testid="stDownloadButton"] > button {
+  font-family: var(--font) !important; font-weight: 600 !important;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+[data-testid="stDownloadButton"] > button:hover {
+  background:  var(--accent) !important;
+  color:       #fff !important;
+  border-color: var(--accent) !important;
+}
+[data-testid="stCaptionContainer"] { font-family: var(--font) !important; font-size: 12px !important; }
+
+
+/* --- Floating Chatbot Prabh widget (ai/ui/floating_widget.py) --- */
+.st-key-floating_assistant_toggle_btn {
+  position: fixed; bottom: 28px; right: 28px; z-index: 10000; width: auto;
+}
+/* Safety net: force-hide the toggle button (including its nested
+   tooltip-icon wrapper, which Streamlit does not always clear from a
+   st.empty() placeholder on the same run the panel opens) whenever the
+   panel is present in the DOM. Belt-and-suspenders alongside the
+   Python-side conditional rendering in floating_widget.py. */
+body:has(.st-key-floating_assistant_panel) .st-key-floating_assistant_toggle_btn {
+  display: none !important;
+}
+.st-key-floating_assistant_toggle_btn button {
+  border-radius: 50%; width: 60px; height: 60px; padding: 0; font-size: 24px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-h));
+  color: #fff; border: none; line-height: 1;
+  box-shadow: 0 6px 20px rgba(0, 87, 184, 0.35);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.st-key-floating_assistant_toggle_btn button:hover {
+  transform: scale(1.08);
+  box-shadow: 0 8px 26px rgba(0, 87, 184, 0.45);
+}
+.st-key-floating_assistant_toggle_btn button:active { transform: scale(0.96); }
+
+.st-key-floating_assistant_panel {
+  position: fixed; top: 74px; right: 16px; z-index: 9999;
+  width: 540px; max-width: 92vw; height: calc(100vh - 90px);
+  display: flex; flex-direction: column; overflow-y: auto;
+  scroll-behavior: smooth; scrollbar-width: thin; scrollbar-color: #CBD5E1 transparent;
+  background: #fff; border: 1px solid #E5E9F0; border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.16);
+  padding: 0 20px 16px 20px;
+  animation: copilotSlideIn 0.25s ease-out;
+}
+@media (max-width: 1440px) { .st-key-floating_assistant_panel { width: 460px; } }
+@media (max-width: 900px)  { .st-key-floating_assistant_panel { width: 92vw; right: 4vw; } }
+
+.st-key-floating_assistant_panel::-webkit-scrollbar { width: 6px; }
+.st-key-floating_assistant_panel::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+
+@keyframes copilotSlideIn {
+  from { transform: translateX(16px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* Header row: title/subtitle + close button, sticky at the panel's top */
+.st-key-floating_assistant_panel > div > div[data-testid="stHorizontalBlock"]:first-of-type {
+  position: sticky; top: 0; background: #fff; z-index: 2;
+  padding: 18px 0 12px 0; border-bottom: 1px solid #EEF2F7; margin-bottom: 6px;
+}
+.copilot-title { font-weight: 700; font-size: 16px; color: #1E293B; }
+.copilot-subtitle { font-size: 12.5px; color: #64748B; margin-top: 2px; line-height: 1.4; }
+.st-key-floating_assistant_close_btn {
+  /* The header row above is `position: sticky`, but its "stuck" range
+     is limited to its own immediate wrapper's box in Streamlit's
+     generated nesting -- once the panel's content is tall enough,
+     that wrapper is shorter than the scrollable area and the header
+     (including this close button) scrolls out of view anyway. Pinning
+     the close button itself to the viewport, independent of the
+     panel's inner scroll position, is what actually keeps it
+     reachable at any scroll depth (verified against real overflow in
+     a live browser) -- the same "always-visible close control"
+     pattern Copilot/ChatGPT-style panels use. */
+  position: fixed !important;
+  top: 90px; right: 36px; z-index: 10001;
+}
+.st-key-floating_assistant_close_btn button {
+  border: none; background: transparent; color: #64748B; font-size: 16px;
+  border-radius: 6px; transition: background 0.15s ease, color 0.15s ease;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+}
+.st-key-floating_assistant_close_btn button:hover { background: #F1F5F9; color: #1E293B; }
+@media (max-width: 900px) { .st-key-floating_assistant_close_btn { right: calc(4vw + 20px); } }
+
+/* Empty / welcome state */
+.copilot-empty { text-align: center; padding: 20px 6px 10px 6px; color: #475569; }
+.copilot-empty-emoji { font-size: 32px; margin-bottom: 6px; }
+.copilot-empty-title { font-weight: 700; font-size: 17px; color: #1E293B; margin-bottom: 6px; }
+.copilot-empty p { font-size: 13.5px; line-height: 1.5; margin: 4px 0; }
+.copilot-capabilities {
+  list-style: none; display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 6px 8px; padding: 6px 0 0 0; margin: 6px 0 0 0;
+}
+.copilot-capabilities li {
+  background: #F1F5F9; color: #334155; font-size: 12px; font-weight: 500;
+  padding: 4px 10px; border-radius: 999px;
+}
+
+/* Suggestion chips (rendered as st.button, use_container_width) */
+.st-key-floating_assistant_panel [data-testid="stColumn"] button {
+  border-radius: 10px; border: 1px solid #E2E8F0; background: #F8FAFC;
+  color: #334155; font-size: 12.5px; font-weight: 500; padding: 10px 8px;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+.st-key-floating_assistant_panel [data-testid="stColumn"] button:hover {
+  border-color: var(--accent); background: #EEF4FC; color: var(--accent);
+  transform: translateY(-1px);
+}
+
+/* Quick-action / follow-up suggestion groups: reuses .section-label's
+   existing typography, just with tighter vertical rhythm suited to a
+   narrow panel with several stacked groups. */
+.st-key-floating_assistant_panel .section-label { margin: 16px 0 8px; }
+
+/* Quick-action / follow-up suggestion chips: matches by key substring
+   (Streamlit sets the class to "st-key-<key>", and these containers
+   are keyed "..._quick_actions" / "..._followups" with a varying
+   prefix -- welcome vs. per-turn follow-up counts -- so a substring
+   match is what actually stays correct as that count changes, rather
+   than an exact key that only matches one specific count). Applies to
+   both the full "AI Assistant" page and the floating panel.
+
+   flex-wrap lets a row of buttons wrap onto additional lines once
+   they no longer fit at a readable width, instead of being forced
+   into equally-narrow columns that wrap text mid-word -- this is what
+   actually keeps a 5-item row (e.g. Executive Summary's quick actions)
+   legible in the narrow floating panel while still fitting on one row
+   in the full page's much wider content area, with no per-surface
+   Python layout logic needed. */
+[class*="st-key-"][class*="_quick_actions"] [data-testid="stHorizontalBlock"],
+[class*="st-key-"][class*="_followups"] [data-testid="stHorizontalBlock"] {
+  flex-wrap: wrap !important;
+  row-gap: 10px;
+}
+[class*="st-key-"][class*="_quick_actions"] [data-testid="stColumn"],
+[class*="st-key-"][class*="_followups"] [data-testid="stColumn"] {
+  flex: 1 1 150px !important;
+  width: auto !important;
+  min-width: 150px;
+}
+[class*="st-key-"][class*="_quick_actions"] [data-testid="stColumn"] button,
+[class*="st-key-"][class*="_followups"] [data-testid="stColumn"] button {
+  border-radius: 10px; border: 1px solid #E2E8F0; background: #F8FAFC;
+  color: #334155; font-size: 12.5px; font-weight: 500; padding: 10px 8px;
+}
+[class*="st-key-"][class*="_quick_actions"] [data-testid="stColumn"] button:hover,
+[class*="st-key-"][class*="_followups"] [data-testid="stColumn"] button:hover {
+  border-color: var(--accent); background: #EEF4FC; color: var(--accent);
+}
+
+/* Chat message bubbles, scoped to this panel only */
+.st-key-floating_assistant_panel [data-testid="stChatMessage"] {
+  padding: 8px 0; font-size: 13.5px; line-height: 1.55;
+}
+
+/* Not-configured card */
+.copilot-config-card {
+  background: #FFFBEB; border: 1px solid #FDE68A; border-radius: 10px;
+  padding: 16px 18px; margin: 12px 0; color: #78350F;
+}
+.copilot-config-icon { font-size: 20px; }
+.copilot-config-title { font-weight: 700; font-size: 14.5px; margin: 4px 0 8px 0; color: #92400E; }
+.copilot-config-card p { font-size: 13px; line-height: 1.5; margin: 4px 0; }
+.copilot-config-card ol { margin: 6px 0; padding-left: 20px; font-size: 13px; }
+.copilot-config-doclink {
+  display: inline-block; margin-top: 8px; font-size: 12.5px; font-weight: 600;
+  color: var(--accent); text-decoration: underline; cursor: default;
+}
+
+/* Compact inline error, replaces a full-width st.error banner */
+.copilot-error {
+  background: #FEF2F2; border: 1px solid #FECACA; color: #B91C1C;
+  border-radius: 8px; padding: 10px 14px; font-size: 13px; line-height: 1.5;
+}

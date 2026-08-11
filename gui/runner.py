@@ -40,6 +40,9 @@ from excel_reader import (  # noqa: E402
     read_project_rows,
     disambiguate_shared_ds_code_sections,
     NO_MATCHING_ROWS,
+    check_no_silent_section_loss,
+    SectionDisambiguationError,
+    is_blank,
 )
 from comment_mapper import CommentMapper  # noqa: E402
 from historical_lookup import HistoricalLookup  # noqa: E402
@@ -207,6 +210,38 @@ def generate_summary(
         progress("Reading project rows…")
         rows = read_project_rows(ws_main, cmap)
 
+        # Additive validation pass -- classifies every physical row as
+        # VALID/WARNING/ERROR. Does not filter, reorder, or otherwise
+        # change `rows` or anything downstream. Mirrors main.py's own
+        # row-validation step exactly (previously present only in
+        # main.py, not here -- meaning a customer row under a genuinely
+        # unrecognized Group marker was silently dropped with no
+        # warning at all when generated through this, the Streamlit
+        # app's actual code path).
+        try:
+            from row_validator import validate_rows
+            validation_results = validate_rows(ws_main, cmap)
+        except Exception:
+            validation_results = []
+
+        error_rows = [v for v in validation_results if v.status == "ERROR"]
+        if error_rows:
+            lines = []
+            for v in error_rows:
+                missing = []
+                if is_blank(v.name):
+                    missing.append("Missing Name")
+                if is_blank(v.group):
+                    missing.append("Missing Group")
+                if not missing:
+                    missing.append(v.reason)
+                for m in missing:
+                    lines.append(f"Row {v.row_index}: {m}")
+            raise GenerationError(
+                "Row Validation Failed",
+                "\n".join(lines),
+            )
+
         if cmap.sub_group is None:
             progress("No Sub-Group column found — using a single, un-sectioned Summary…")
             all_codes = {r.ds_code for r in rows}
@@ -226,7 +261,7 @@ def generate_summary(
             # Projection sections to add.
             worksheet2_extra_sections_config: list = []
         else:
-            sections_config = disambiguate_shared_ds_code_sections(ws_main, config.OUTPUT_SECTIONS, cmap.name or 1)
+            sections_config = disambiguate_shared_ds_code_sections(ws_main, config.OUTPUT_SECTIONS, cmap.name or 1, cmap.group)
             # A section whose row_range is this exact sentinel means
             # its own title text wasn't found anywhere in THIS specific
             # workbook at all (e.g. an older master workbook that
@@ -234,6 +269,13 @@ def generate_summary(
             # entirely, rather than showing an empty heading/subtotal
             # banner pair for a section that isn't part of this
             # workbook's own layout.
+            #
+            # Before filtering, verify none of the excluded sections
+            # actually have real, classified rows -- that would mean
+            # this is NOT the normal "section absent from this
+            # workbook" case, but a genuine bug about to silently drop
+            # real data. See check_no_silent_section_loss's docstring.
+            check_no_silent_section_loss(rows, sections_config)
             sections_config = [s for s in sections_config if s.row_range != NO_MATCHING_ROWS]
             worksheet2_extra_sections_config = config.WORKSHEET2_ADDITIONAL_SECTIONS
             configured_codes = {
@@ -390,6 +432,17 @@ def generate_summary(
             report_path=report_path,
             error_title=exc.title,
             error_message=exc.message,
+        )
+    except SectionDisambiguationError as exc:
+        report.errors.append(str(exc))
+        report.success = False
+        report_path = _save_failure_report(output_dir_obj, report)
+        return GenerationResult(
+            success=False,
+            report=report,
+            report_path=report_path,
+            error_title="Section Configuration Error",
+            error_message=str(exc),
         )
     except Exception as exc:  # noqa: BLE001 - top-level safety net
         report.errors.append(f"Unexpected error: {exc}")

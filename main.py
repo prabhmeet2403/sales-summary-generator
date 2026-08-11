@@ -35,6 +35,8 @@ from excel_reader import (
     read_project_rows,
     disambiguate_shared_ds_code_sections,
     NO_MATCHING_ROWS,
+    check_no_silent_section_loss,
+    SectionDisambiguationError,
     is_blank,
 )
 from comment_mapper import CommentMapper
@@ -239,6 +241,13 @@ def main(argv=None) -> int:
             # entirely, rather than showing an empty heading/subtotal
             # banner pair for a section that isn't part of this
             # workbook's own layout.
+            #
+            # Before filtering, verify none of the excluded sections
+            # actually have real, classified rows -- that would mean
+            # this is NOT the normal "section absent from this
+            # workbook" case, but a genuine bug about to silently drop
+            # real data. See check_no_silent_section_loss's docstring.
+            check_no_silent_section_loss(rows, sections_config)
             sections_config = [s for s in sections_config if s.row_range != NO_MATCHING_ROWS]
             worksheet2_extra_sections_config = config.WORKSHEET2_ADDITIONAL_SECTIONS
             configured_codes = {
@@ -348,6 +357,12 @@ def main(argv=None) -> int:
         logger.info("Summary workbook written to %s", output_path)
 
     except (RequiredColumnMissingError, DuplicateColumnHeaderError) as exc:
+        print(f"ERROR: {exc}")
+        print("Generation aborted.")
+        report.errors.append(str(exc))
+        report.success = False
+        logger.error(str(exc))
+    except SectionDisambiguationError as exc:
         print(f"ERROR: {exc}")
         print("Generation aborted.")
         report.errors.append(str(exc))

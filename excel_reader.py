@@ -665,6 +665,52 @@ class MasterWorkbook:
 NO_MATCHING_ROWS: Tuple[int, int] = (-2, -1)
 
 
+class SectionDisambiguationError(Exception):
+    """Raised when a section has real, classified rows (its
+    group_marker was found and used by read_project_rows) but ended up
+    excluded from the final section list by
+    disambiguate_shared_ds_code_sections (row_range == NO_MATCHING_ROWS
+    despite that). This is a genuine internal inconsistency, not a
+    normal "this section doesn't apply to this workbook" case, and
+    must never be silently swallowed -- it means real data is about to
+    be dropped from the output entirely. See check_no_silent_section_loss.
+    """
+
+
+def check_no_silent_section_loss(
+    rows: List["ProjectRow"],
+    sections_before_filtering: List["config.OutputSection"],
+) -> None:
+    """Raise SectionDisambiguationError if any section that
+    read_project_rows actually assigned real rows to (via its own
+    group_marker) has row_range == NO_MATCHING_ROWS -- meaning it is
+    about to be silently dropped from the output entirely despite
+    genuinely having data this run.
+
+    This is a deliberate, independent safety net: it does not care WHY
+    disambiguation failed to find the section's boundary (a caller
+    forgetting to pass group_col, a future refactor, anything else) --
+    it only checks the one fact that must never be true at the same
+    time as row_range == NO_MATCHING_ROWS: this section actually has
+    rows. Callers (main.py, gui/runner.py, and any future one) should
+    call this right after disambiguate_shared_ds_code_sections and
+    before filtering out NO_MATCHING_ROWS sections.
+    """
+    classified_keys = {r.section_key for r in rows if r.section_key}
+    for section in sections_before_filtering:
+        if section.row_range == NO_MATCHING_ROWS and section.key in classified_keys:
+            raise SectionDisambiguationError(
+                f"Internal inconsistency detected for section '{section.key}' "
+                f"(group_marker={section.group_marker!r}, title={section.title!r}): "
+                f"this section has real, classified rows in the source workbook "
+                f"(matched by its Group-column marker), but its physical row "
+                f"boundary could not be located during section disambiguation. "
+                f"Generation has been stopped rather than silently dropping this "
+                f"entire section from the output. This indicates a bug in the "
+                f"application, not a problem with the workbook -- please report it."
+            )
+
+
 def disambiguate_shared_ds_code_sections(
     ws: Worksheet, sections: List["config.OutputSection"], name_col: int = 1,
     group_col: Optional[int] = None,

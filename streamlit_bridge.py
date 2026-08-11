@@ -47,6 +47,7 @@ from excel_reader import (  # noqa: E402
     ColumnNotFoundError,
     build_column_map,
     read_project_rows,
+    is_blank,
 )
 from aggregator import aggregate_section  # noqa: E402
 from validator import SectionStats  # noqa: E402
@@ -130,6 +131,37 @@ def preview_workbook(path: str, year: Optional[int] = None) -> PreviewResult:
         )
 
     rows = read_project_rows(ws_main, cmap)
+
+    # Same row-validation pass main.py and gui/runner.py both run --
+    # reused directly (not reimplemented) so this preview can never
+    # report a misleadingly "successful" group count for a workbook
+    # the real generation will actually reject (e.g. an unrecognized
+    # Group marker). Does not filter, reorder, or otherwise change
+    # `rows` -- purely a pre-check, exactly as in the other two entry
+    # points.
+    try:
+        from row_validator import validate_rows
+        validation_results = validate_rows(ws_main, cmap)
+    except Exception:
+        validation_results = []
+
+    error_rows = [v for v in validation_results if v.status == "ERROR"]
+    if error_rows:
+        lines = []
+        for v in error_rows:
+            missing = []
+            if is_blank(v.name):
+                missing.append("Missing Name")
+            if is_blank(v.group):
+                missing.append("Missing Group")
+            if not missing:
+                missing.append(v.reason)
+            for m in missing:
+                lines.append(f"Row {v.row_index}: {m}")
+        raise GenerationError(
+            "Row Validation Failed",
+            "\n".join(lines),
+        )
 
     if cmap.sub_group is None:
         all_codes = {r.ds_code for r in rows}

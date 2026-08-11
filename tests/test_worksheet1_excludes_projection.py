@@ -31,7 +31,16 @@ from gui.runner import generate_summary  # noqa: E402
 FIXTURE_MASTER = Path(__file__).resolve().parent / "fixtures" / "master_2026.xlsx"
 
 _PROJECTION_KEYS = {"projects_track1_projection", "projects_track2_projection"}
-_PROJECTION_TITLES = {"Track 1 (Projection)", "Track 2 (Projection)"}
+# This fixture's own input heading text for these two sections is just
+# "Track 1" / "Track 2" (see tests/fixtures/master_2026.xlsx, rows 67
+# and 75 -- a real-shaped workbook relying on the Group marker's own
+# "-Projections" suffix to distinguish these from the secured
+# sections, not on heading text). With the input-heading-propagation
+# fix, Worksheet 2 now correctly displays that exact text instead of
+# config.py's canonical "Track 1 (Projection)" title -- this is the
+# correct, intended behavior; the check below still verifies the
+# section only appears on Worksheet 2, never Worksheet 1.
+_PROJECTION_TITLES = {"Track 1", "Track 2"}
 
 
 def main() -> int:

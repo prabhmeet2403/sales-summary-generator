@@ -442,13 +442,38 @@ GROUP_MARKER_TO_SECTION_KEY = {
 }
 
 
-def read_project_rows(ws: Worksheet, cmap: ColumnMap) -> List[ProjectRow]:
+def read_project_rows(
+    ws: Worksheet,
+    cmap: ColumnMap,
+    section_headings: Optional[Dict[str, str]] = None,
+) -> List[ProjectRow]:
     """Read every genuine data row from the sheet.
 
     A row is considered a genuine project row when it carries a non-blank
     Sub-Group value (section headers, subtotal rows, and blank spacer
     rows never do). If the sheet has no Sub-Group column at all, we fall
     back to "non-blank Group column" as the row filter.
+
+    `section_headings`, if given a dict, is populated in place as a
+    side effect: {section_key: exact human-readable heading text}, one
+    entry per section actually encountered on this sheet. This is the
+    INPUT workbook's own heading text (e.g. "...Track 1 (Secured)"),
+    captured purely for later DISPLAY purposes -- it plays no role in
+    classification here or anywhere else. Classification is, and
+    remains, based solely on the Group-column marker (see
+    GROUP_MARKER_TO_SECTION_KEY above); this parameter only records
+    what the row that triggered a given classification happened to say
+    in its Name column, for a caller (summary_writer.py, via main.py /
+    gui/runner.py) that wants to show the user's own wording instead of
+    config.py's fixed title. Uses the FIRST heading-text seen for a
+    given section_key (via setdefault, not overwrite) -- a later row
+    that re-triggers the same marker (e.g. a "Sub-Total : Secured"
+    decorative banner that happens to reuse "Staffing-Secured" as its
+    own Group value, confirmed to occur in real production workbooks)
+    must never clobber the genuine heading captured earlier.
+    Callers that have no use for this (e.g. historical_lookup.py,
+    reading a prior year's sheet purely for its numbers) simply omit
+    the argument and get the exact same behavior as before.
     """
     rows: List[ProjectRow] = []
     start = cmap.field_header_row + 1
@@ -480,6 +505,8 @@ def read_project_rows(ws: Worksheet, cmap: ColumnMap) -> List[ProjectRow]:
             # classification. Row position, sheet order, and DS-code
             # play no role either.
             current_section = GROUP_MARKER_TO_SECTION_KEY[group_val_for_marker]
+            if section_headings is not None and isinstance(first_cell, str) and first_cell.strip():
+                section_headings.setdefault(current_section, first_cell.strip())
 
         name_val = ws.cell(r, cmap.name).value
         group_val = ws.cell(r, cmap.group).value if cmap.group else None

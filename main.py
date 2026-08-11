@@ -22,7 +22,7 @@ import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import config
 from excel_reader import (
@@ -161,7 +161,8 @@ def main(argv=None) -> int:
                 "Expected 12 monthly columns with an 'Actual' or 'Forecast' row label above them."
             )
 
-        rows = read_project_rows(ws_main, cmap)
+        section_headings: Dict[str, str] = {}
+        rows = read_project_rows(ws_main, cmap, section_headings)
         logger.info("Read %d project rows from sheet '%s'.", len(rows), main_sheet_name)
 
         # Additive validation pass -- classifies every physical row as
@@ -316,7 +317,7 @@ def main(argv=None) -> int:
         worksheet2_monthly_section_results = build_monthly_sections(
             rows, cmap, ws_main, section_results + worksheet2_extra_section_results,
         )
-        wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles)
+        wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles, section_headings)
 
         # Worksheet 2/3's names in the GENERATED workbook (Worksheet 1
         # is named by `writer.build()` itself, unaffected by the target

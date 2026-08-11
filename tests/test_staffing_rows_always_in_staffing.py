@@ -67,7 +67,12 @@ def main() -> int:
         found = False
         for r in range(1, ws2.max_row + 1):
             v = ws2.cell(row=r, column=1).value
-            if v == "Staffing- Secured":
+            # The fixture's own input heading (line ~37) is "Staffing"
+            # -- with the input-heading-propagation fix, that is
+            # exactly what the output now shows (not config.py's fixed
+            # "Staffing- Secured" title), which is the correct,
+            # intended behavior this test should reflect.
+            if v == "Staffing":
                 in_staffing = True
                 continue
             if in_staffing:

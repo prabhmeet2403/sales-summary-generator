@@ -829,7 +829,16 @@ class SummaryWriter:
         sections: List[Tuple[config.OutputSection, List[GroupSummary]]],
         monthly_sections: Optional[List[Tuple[config.OutputSection, List["MonthlyGroupSummary"]]]] = None,
         month_roles: Optional[Dict[int, str]] = None,
+        section_headings: Optional[Dict[str, str]] = None,
     ) -> Workbook:
+        # {section_key: exact heading text from the INPUT workbook},
+        # captured by excel_reader.read_project_rows -- purely a
+        # display-label override. When a section's key isn't present
+        # here (e.g. it had zero rows this run, so its own heading was
+        # never encountered), section.title (config.py's fixed text)
+        # is used exactly as before -- see _section_display_heading.
+        self._section_headings: Dict[str, str] = section_headings or {}
+
         wb = Workbook()
         ws = wb.active
         # Constant, not year-based: unlike Worksheet 2/3, this sheet's
@@ -851,7 +860,7 @@ class SummaryWriter:
                 current_row += 1
                 current_row += section.blank_rows_after_heading
 
-            self._write_banner_row(ws, current_row, section.title, fill=config.SUBHEADING_FILL)
+            self._write_banner_row(ws, current_row, self._section_display_heading(section), fill=config.SUBHEADING_FILL)
             current_row += 1
             # `section.blank_rows_after_title` is deliberately NOT applied
             # here. This value was originally set (see config.py's
@@ -917,6 +926,18 @@ class SummaryWriter:
         return wb
 
     # ------------------------------------------------------------------
+    def _section_display_heading(self, section: config.OutputSection) -> str:
+        """The text to actually print for this section's own heading
+        row: the exact heading captured from the INPUT workbook if one
+        was encountered for this section this run, otherwise
+        config.py's fixed `section.title` -- e.g. a section with zero
+        rows in this particular workbook never had its own heading row
+        to capture text from, and must not print blank/None. Never
+        affects section.key, ds_codes, category, or any other field --
+        purely which string gets written as the visible label.
+        """
+        return self._section_headings.get(section.key, section.title)
+
     def _write_headers(self, ws: Worksheet) -> None:
         bold_center = Font(name=config.FONT_NAME, size=config.FONT_SIZE, bold=True)
         center = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -1255,7 +1276,7 @@ class SummaryWriter:
                 current_row += 1
                 current_row += section.blank_rows_after_heading
 
-            self._write_plain_banner(ws2, current_row, section.title, last_col, content_rows, config.SUBHEADING_FILL)
+            self._write_plain_banner(ws2, current_row, self._section_display_heading(section), last_col, content_rows, config.SUBHEADING_FILL)
             current_row += 1
             # `section.blank_rows_after_title` is deliberately NOT applied
             # here. That field exists to reproduce Worksheet 1's own

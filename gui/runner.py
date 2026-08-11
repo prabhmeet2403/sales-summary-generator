@@ -208,7 +208,8 @@ def generate_summary(
             )
 
         progress("Reading project rows…")
-        rows = read_project_rows(ws_main, cmap)
+        section_headings: Dict[str, str] = {}
+        rows = read_project_rows(ws_main, cmap, section_headings)
 
         # Additive validation pass -- classifies every physical row as
         # VALID/WARNING/ERROR. Does not filter, reorder, or otherwise
@@ -353,7 +354,7 @@ def generate_summary(
             rows, cmap, ws_main, section_results + worksheet2_extra_section_results,
         )
         monthly_section_results = worksheet2_monthly_section_results[:len(section_results)]
-        wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles)
+        wb = writer.build(section_results, worksheet2_monthly_section_results, month_roles, section_headings)
 
         # Worksheet 2/3's names in the GENERATED workbook (Worksheet 1
         # is named by `writer.build()` itself, unaffected by the target

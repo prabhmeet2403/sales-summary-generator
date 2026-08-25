@@ -280,9 +280,23 @@ WORKSHEET2_ADDITIONAL_SECTIONS: List[OutputSection] = [
         sort_alphabetically=True,
         blank_rows_after_title=0,
         blank_rows_after_data=1,
-        blank_rows_after_subtotal=0,  # last section on Worksheet 2
+        blank_rows_after_subtotal=1,
         category="prospecting",
         group_marker="Track 2-Projections",
+    ),
+    OutputSection(
+        key="staffing_projections",
+        heading=None,
+        title="Staffing- Projections",
+        subtotal_label="Subtotal : Staffing- Projections",
+        ds_codes=[95],
+        show_poc=False,
+        sort_alphabetically=True,
+        blank_rows_after_title=0,
+        blank_rows_after_data=1,
+        blank_rows_after_subtotal=0,  # last section on Worksheet 2
+        category="prospecting",
+        group_marker="Staffing-Projections",
     ),
 ]
 

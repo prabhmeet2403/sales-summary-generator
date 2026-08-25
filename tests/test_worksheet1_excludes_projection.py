@@ -30,7 +30,7 @@ from gui.runner import generate_summary  # noqa: E402
 
 FIXTURE_MASTER = Path(__file__).resolve().parent / "fixtures" / "master_2026.xlsx"
 
-_PROJECTION_KEYS = {"projects_track1_projection", "projects_track2_projection"}
+_PROJECTION_KEYS = {"projects_track1_projection", "projects_track2_projection", "staffing_projections"}
 # This fixture's own input heading text for these two sections is just
 # "Track 1" / "Track 2" (see tests/fixtures/master_2026.xlsx, rows 67
 # and 75 -- a real-shaped workbook relying on the Group marker's own

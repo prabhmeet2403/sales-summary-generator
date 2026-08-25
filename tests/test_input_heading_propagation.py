@@ -57,6 +57,7 @@ sys.path.insert(0, str(TEST_DIR))
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import openpyxl  # noqa: E402
+import config  # noqa: E402
 from fixture_builder import new_workbook, write_row  # noqa: E402
 
 
@@ -97,6 +98,12 @@ SECTIONS = {
         "sub_group": "DS50_Projection",
         "key": "projects_track2_projection",
     },
+    "staffing_projections": {
+        "heading": "Staffing (Projections)",
+        "marker": "Staffing-Projections",
+        "sub_group": "DS95_Secured",
+        "key": "staffing_projections",
+    },
 }
 
 
@@ -107,6 +114,7 @@ BASE_VALUES = {
     "investments": 0,
     "track1proj": 444444,
     "track2proj": 555555,
+    "staffing_projections": 666666,
 }
 
 
@@ -130,6 +138,7 @@ def build_full_fixture(heading_overrides: dict | None = None) -> Path:
         "investments",
         "track1proj",
         "track2proj",
+        "staffing_projections",
         "staffing",
     ]:
         section = SECTIONS[key]
@@ -415,6 +424,7 @@ def test_single_section_heading_change(
     if key in (
         "track1proj",
         "track2proj",
+        "staffing_projections",
     ):
         sheets_to_check = [
             "2026 Monthly Performance",
@@ -491,6 +501,7 @@ def test_all_six_simultaneously() -> None:
         if key in (
             "track1proj",
             "track2proj",
+            "staffing_projections",
         ):
             sheets_to_check = [
                 "2026 Monthly Performance",
@@ -526,6 +537,7 @@ def test_all_six_simultaneously() -> None:
     expected_prospecting = (
         BASE_VALUES["track1proj"]
         + BASE_VALUES["track2proj"]
+        + BASE_VALUES["staffing_projections"]
     )
 
     total_secured = get_annual_total(
@@ -555,6 +567,7 @@ def test_all_six_simultaneously() -> None:
         "investments": "Subtotal : Investments",
         "track1proj": "Subtotal : Track 1 (Projection)",
         "track2proj": "Subtotal : Track 2 (Projection)",
+        "staffing_projections": "Subtotal : Staffing- Projections",
     }
 
     for key in SECTIONS:
@@ -604,6 +617,7 @@ def test_original_headings_regression() -> None:
         if key in (
             "track1proj",
             "track2proj",
+            "staffing_projections",
         ):
             sheets_to_check = [
                 "2026 Monthly Performance",
@@ -713,6 +727,24 @@ def test_zero_row_section_fallback() -> None:
     # Track 2 must fall back to config.py's canonical title.
     assert SECTIONS["track2"]["heading"] in values, (
         "Track 2's config.py title was not found in the "
+        f"zero-row fallback output. Headings: {values}"
+    )
+
+    # Staffing-Projections (also absent from this fixture) must
+    # likewise fall back to config.py's canonical title, not a blank
+    # heading and not another section's text. Looked up directly from
+    # config.py (rather than SECTIONS["staffing_projections"]["heading"],
+    # which deliberately holds the real workbook's own input-heading
+    # text, not config.py's fallback title -- those two are expected
+    # to differ).
+    staffing_projections_fallback_title = next(
+        s.title
+        for s in config.WORKSHEET2_ADDITIONAL_SECTIONS
+        if s.key == "staffing_projections"
+    )
+
+    assert staffing_projections_fallback_title in values, (
+        "Staffing-Projections' config.py title was not found in the "
         f"zero-row fallback output. Headings: {values}"
     )
 
@@ -853,6 +885,136 @@ def test_track1_investments_isolation() -> None:
         f"Investments total = {inv_total}, "
         f"expected {BASE_VALUES['investments']} "
         "(possible cross-contamination)"
+    )
+
+
+# ---------------------------------------------------------------------
+# Test K2:
+# Staffing-Secured / Staffing-Projections are two distinct sections
+# (different Group markers, different DS-codes, different categories --
+# "secured" vs "prospecting") and must remain fully isolated. Renaming
+# one's heading must not affect the other's heading or totals.
+# ---------------------------------------------------------------------
+
+
+def test_staffing_secured_and_projections_isolation() -> None:
+    staffing_changed = (
+        "Staffing Secured -- Renamed"
+    )
+
+    staffing_proj_changed = (
+        "Staffing Projections -- Renamed"
+    )
+
+    path = build_full_fixture(
+        {
+            "staffing": staffing_changed,
+            "staffing_projections": staffing_proj_changed,
+        }
+    )
+
+    out = path.parent / "out"
+
+    rc, stdout, stderr = run_entry_point(
+        "main",
+        path,
+        out,
+    )
+
+    assert rc == 0, (
+        f"Staffing-Secured / Staffing-Projections isolation failed: "
+        f"rc={rc}\n"
+        f"STDOUT:\n{stdout[-1000:]}\n"
+        f"STDERR:\n{stderr[-1000:]}"
+    )
+
+    output_file = (
+        out / "Sales_and_Forecast_Summary_2026.xlsx"
+    )
+
+    headings = get_headings_by_row(
+        output_file,
+        "2026 Monthly Performance",
+    )
+
+    values = list(headings.values())
+
+    assert staffing_changed in values, (
+        "Staffing-Secured's own renamed heading is missing. "
+        f"Headings: {values}"
+    )
+
+    assert staffing_proj_changed in values, (
+        "Staffing-Projections' own renamed heading is missing. "
+        f"Headings: {values}"
+    )
+
+    assert staffing_changed != staffing_proj_changed
+
+    # Worksheet 1 must show Staffing-Secured (a "secured" section) but
+    # must NOT show Staffing-Projections (a "prospecting" section) --
+    # same established rule already verified for Track 1/2 Projection.
+    ws1_headings = get_headings_by_row(
+        output_file,
+        "Multi-Year Revenue & Margin",
+    )
+    ws1_values = list(ws1_headings.values())
+
+    assert staffing_changed in ws1_values, (
+        "Staffing-Secured's renamed heading is missing from Worksheet 1. "
+        f"Headings: {ws1_values}"
+    )
+
+    assert staffing_proj_changed not in ws1_values, (
+        "Staffing-Projections (a Worksheet-2-only, prospecting-category "
+        "section) incorrectly appeared on Worksheet 1. "
+        f"Headings: {ws1_values}"
+    )
+
+    # Verify the two sections' totals did not cross-contaminate.
+    staffing_total = get_annual_total(
+        output_file,
+        "Subtotal : Staffing- Secured",
+    )
+
+    staffing_proj_total = get_annual_total(
+        output_file,
+        "Subtotal : Staffing- Projections",
+    )
+
+    assert staffing_total == BASE_VALUES["staffing"], (
+        f"Staffing-Secured total = {staffing_total}, "
+        f"expected {BASE_VALUES['staffing']} "
+        "(possible cross-contamination with Staffing-Projections)"
+    )
+
+    assert staffing_proj_total == BASE_VALUES["staffing_projections"], (
+        f"Staffing-Projections total = {staffing_proj_total}, "
+        f"expected {BASE_VALUES['staffing_projections']} "
+        "(possible cross-contamination with Staffing-Secured)"
+    )
+
+    # Staffing-Secured must contribute to TOTAL Secured;
+    # Staffing-Projections must contribute to TOTAL Prospecting -- not
+    # the other way around, and not both.
+    total_secured = get_annual_total(
+        output_file,
+        "TOTAL Secured",
+    )
+
+    total_prospecting = get_annual_total(
+        output_file,
+        "TOTAL Prospecting",
+    )
+
+    assert BASE_VALUES["staffing"] <= total_secured, (
+        "Staffing-Secured's own value does not appear to be included "
+        "in TOTAL Secured."
+    )
+
+    assert BASE_VALUES["staffing_projections"] <= total_prospecting, (
+        "Staffing-Projections' own value does not appear to be "
+        "included in TOTAL Prospecting."
     )
 
 
